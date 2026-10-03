@@ -101,7 +101,8 @@ test('on Windows the cache is found under %TEMP% and the thumbnail is drawn as h
   const root = 'C:\\Temp\\claude'
   const dir = `${root}/C--work/sess-win/images`
   const draft = 'see [Image #1]'
-  const env: Record<string, string> = { OS: 'Windows_NT', TEMP: 'C:\\Temp' }
+  // WezTerm draws kitty graphics on macOS and Linux, but not through ConPTY: still half blocks.
+  const env: Record<string, string> = { OS: 'Windows_NT', TEMP: 'C:\\Temp', TERM_PROGRAM: 'WezTerm' }
   // A 64x24 BGRA thumbnail, every pixel opaque orange (#ff8800).
   const bgra = new Uint8Array(64 * 24 * 4)
   for (let i = 0; i < bgra.length; i += 4) bgra.set([0x00, 0x88, 0xff, 0xff], i)

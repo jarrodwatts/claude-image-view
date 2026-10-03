@@ -70,7 +70,7 @@ Run `claude plugin validate` on the repo to see every event it hooks and every c
 - macOS or Linux, with a terminal that has the kitty graphics protocol, such as [Ghostty](https://ghostty.org) or [kitty](https://sw.kovidgoyal.net/kitty/)
 - Or Windows, in any terminal with 24-bit color, such as Windows Terminal
 
-On macOS and Linux, other terminals show `[Image #n]` in each tile instead of the picture. On Windows, terminals without kitty graphics get a low-resolution thumbnail drawn from colored half-block characters. The Claude Desktop app already previews pasted images, so the mod draws nothing there.
+On macOS and Linux, other terminals show `[Image #n]` in each tile instead of the picture. On Windows, every terminal gets a low-resolution thumbnail drawn from colored half-block characters, including ones with kitty graphics such as WezTerm: Windows drops the kitty graphics sequences before the terminal sees them. The Claude Desktop app already previews pasted images, so the mod draws nothing there.
 
 ## Troubleshooting
 

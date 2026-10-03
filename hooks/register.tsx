@@ -39,7 +39,8 @@ try {
 type Thumbnail = { size: Size; pixels: string }
 
 let tmpRoots: string[] | undefined
-// True where thumbnails are drawn as half blocks: on Windows, outside a kitty-graphics terminal.
+// True where thumbnails are drawn as half blocks: on Windows, where ConPTY drops kitty
+// graphics before the terminal sees them, even in one that draws them elsewhere (WezTerm).
 let usesBlocks: boolean | undefined
 const thumbnails = new Map<string, Thumbnail | null>()
 let found: { sessionId: string; dir: string } | undefined
@@ -81,13 +82,6 @@ async function findTmpRoots($: EngineInterface): Promise<string[]> {
     return base === undefined ? [] : [`${base}\\claude`, base]
   }
   return [fromEnv ?? `/tmp/claude-${(await $.process.run(['id', '-u'])).stdout.trim()}`]
-}
-
-async function hasKittyGraphics($: EngineInterface): Promise<boolean> {
-  if ((await $.env.get('KITTY_WINDOW_ID')) !== undefined) return true
-  if ((await $.env.get('TERM'))?.includes('kitty')) return true
-  const program = await $.env.get('TERM_PROGRAM')
-  return program === 'ghostty' || program === 'WezTerm'
 }
 
 async function thumbnail($: EngineInterface, path: string): Promise<Thumbnail | null> {
@@ -141,7 +135,7 @@ async function show($: EngineInterface, draft: string) {
   const key = numbers.join(',')
   if (key === shownKey) return
   const dir = numbers.length > 0 ? await imagesDir($) : undefined
-  usesBlocks ??= (await isWindows($)) && !(await hasKittyGraphics($))
+  usesBlocks ??= await isWindows($)
   const list: PastedImage[] = []
   for (const n of numbers) list.push(await describe($, dir, n))
   shownKey = list.every(image => image.path !== null) ? key : undefined
