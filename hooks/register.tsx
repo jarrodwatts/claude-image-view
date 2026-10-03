@@ -39,8 +39,18 @@ try {
 type Thumbnail = { size: Size; pixels: string }
 
 let tmpRoots: string[] | undefined
-// True where thumbnails are drawn as half blocks: on Windows, where ConPTY drops kitty
-// graphics before the terminal sees them, even in one that draws them elsewhere (WezTerm).
+// On Windows a program's output reaches the terminal through ConPTY, and one older than this
+// drops kitty graphics on the way. WezTerm runs the OpenConsole.exe beside it: its stable
+// release bundles an unversioned one that drops them, its nightly 1.22.
+const KITTY_CONPTY = { major: 1, minor: 22 }
+const CONPTY_VERSION_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+$v = (Get-Item $env:IMAGE_VIEW_CONSOLE).VersionInfo
+"$($v.FileMajorPart).$($v.FileMinorPart)"
+`
+
+// True where thumbnails are drawn as half blocks: on Windows, unless kitty graphics reach
+// the terminal.
 let usesBlocks: boolean | undefined
 const thumbnails = new Map<string, Thumbnail | null>()
 let found: { sessionId: string; dir: string } | undefined
@@ -84,6 +94,24 @@ async function findTmpRoots($: EngineInterface): Promise<string[]> {
   return [fromEnv ?? `/tmp/claude-${(await $.process.run(['id', '-u'])).stdout.trim()}`]
 }
 
+async function windowsHasKittyGraphics($: EngineInterface): Promise<boolean> {
+  if ((await $.env.get('TERM_PROGRAM')) !== 'WezTerm') return false
+  const dir = await $.env.get('WEZTERM_EXECUTABLE_DIR')
+  if (dir === undefined) return false
+  return $.process
+    .run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', CONPTY_VERSION_SCRIPT], {
+      env: { IMAGE_VIEW_CONSOLE: `${dir}\\OpenConsole.exe` },
+    })
+    .then(
+      ({ exitCode, stdout }) => {
+        const [major, minor] = stdout.trim().split('.').map(Number)
+        if (exitCode !== 0 || major === undefined || minor === undefined) return false
+        return major > KITTY_CONPTY.major || (major === KITTY_CONPTY.major && minor >= KITTY_CONPTY.minor)
+      },
+      () => false,
+    )
+}
+
 async function thumbnail($: EngineInterface, path: string): Promise<Thumbnail | null> {
   const made = thumbnails.get(path)
   if (made !== undefined) return made
@@ -118,7 +146,10 @@ async function describeBlocks($: EngineInterface, dir: string | undefined, n: nu
 async function describe($: EngineInterface, dir: string | undefined, n: number): Promise<PastedImage> {
   if (usesBlocks) return describeBlocks($, dir, n)
   const path = `${dir}/${n}.png`
-  if (dir === undefined || !(await $.fs.exists(path))) return { n, path: null, size: null, pixels: null }
+  if (dir === undefined || !(await $.fs.exists(path))) {
+    // A Windows paste that isn't a PNG: the terminal reads only PNGs, so it is drawn as blocks.
+    return (await isWindows($)) ? describeBlocks($, dir, n) : { n, path: null, size: null, pixels: null }
+  }
   if (!sizes.has(path)) {
     const head = await $.fs.read(path, { as: 'bytes' }).then(
       ({ base64 }) => pngSize(base64),
@@ -135,7 +166,7 @@ async function show($: EngineInterface, draft: string) {
   const key = numbers.join(',')
   if (key === shownKey) return
   const dir = numbers.length > 0 ? await imagesDir($) : undefined
-  usesBlocks ??= await isWindows($)
+  usesBlocks ??= (await isWindows($)) && !(await windowsHasKittyGraphics($))
   const list: PastedImage[] = []
   for (const n of numbers) list.push(await describe($, dir, n))
   shownKey = list.every(image => image.path !== null) ? key : undefined
