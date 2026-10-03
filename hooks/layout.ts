@@ -57,3 +57,48 @@ export function fitRow(sizes: readonly (Size | null)[], maxRows: number, bodyCol
   }
   return sizes.map(size => fitCells(size, 1))
 }
+
+/** The thumbnail a terminal without kitty graphics is drawn from: BGRA, stretched to this box. */
+export const THUMB = { width: 64, height: 24 }
+
+const UPPER_HALF_BLOCK = 0x2580
+
+/**
+ * A `Raster`'s cells for a `columns` by `rows` box showing a THUMB-sized BGRA thumbnail:
+ * each cell an upper half block, its foreground the pixel above and its background the one below.
+ */
+export function blockCells(bgraBase64: string, columns: number, rows: number): string | null {
+  const bgra = Uint8Array.from(atob(bgraBase64), char => char.charCodeAt(0))
+  if (bgra.length !== THUMB.width * THUMB.height * 4) return null
+
+  // The mean color of the thumbnail pixels one half cell covers.
+  const color = (x: number, y: number): number => {
+    const left = Math.floor((x * THUMB.width) / columns)
+    const right = Math.max(left + 1, Math.floor(((x + 1) * THUMB.width) / columns))
+    const top = Math.floor((y * THUMB.height) / (rows * 2))
+    const bottom = Math.max(top + 1, Math.floor(((y + 1) * THUMB.height) / (rows * 2)))
+    let r = 0
+    let g = 0
+    let b = 0
+    for (let py = top; py < bottom; py++) {
+      for (let px = left; px < right; px++) {
+        const i = (py * THUMB.width + px) * 4
+        b += bgra[i] ?? 0
+        g += bgra[i + 1] ?? 0
+        r += bgra[i + 2] ?? 0
+      }
+    }
+    const count = (right - left) * (bottom - top)
+    return (Math.round(r / count) << 16) | (Math.round(g / count) << 8) | Math.round(b / count)
+  }
+
+  const words = new Uint32Array(columns * rows * 3)
+  for (let row = 0; row < rows; row++) {
+    for (let column = 0; column < columns; column++) {
+      words.set([UPPER_HALF_BLOCK, color(column, row * 2), color(column, row * 2 + 1)], (row * columns + column) * 3)
+    }
+  }
+  let binary = ''
+  for (const byte of new Uint8Array(words.buffer)) binary += String.fromCharCode(byte)
+  return btoa(binary)
+}

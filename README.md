@@ -60,17 +60,17 @@ Claude Code saves every pasted image to a cache folder for the session, as `<tmp
 
 ## Security
 
-Claude Image View is local-only. It makes no network requests and writes no files. It reads the prompt box, lists Claude Code's temp folder to find the current session's image cache, and reads the first bytes of each pasted image. If `CLAUDE_CODE_TMPDIR` isn't set, it runs `id -u` once to find the default temp folder.
+Claude Image View is local-only. It makes no network requests and writes no files. It reads the prompt box, lists Claude Code's temp folder to find the current session's image cache, and reads the first bytes of each pasted image. If `CLAUDE_CODE_TMPDIR` isn't set, it runs `id -u` once to find the default temp folder. On Windows it reads `TEMP` instead, and runs Windows PowerShell once per pasted image to scale it down to a thumbnail. In WezTerm it also runs it once per session to read the version of the `OpenConsole.exe` beside WezTerm.
 
 Run `claude plugin validate` on the repo to see every event it hooks and every call it makes.
 
 ## Requirements
 
 - Claude Code v2.1.287 or later (mods support)
-- macOS or Linux
-- A terminal with the kitty graphics protocol, such as [Ghostty](https://ghostty.org) or [kitty](https://sw.kovidgoyal.net/kitty/)
+- macOS or Linux, with a terminal that has the kitty graphics protocol, such as [Ghostty](https://ghostty.org) or [kitty](https://sw.kovidgoyal.net/kitty/)
+- Or Windows, in any terminal with 24-bit color, such as Windows Terminal
 
-Other terminals show `[Image #n]` in each tile instead of the picture. The Claude Desktop app already previews pasted images, so the mod draws nothing there.
+On macOS and Linux, other terminals show `[Image #n]` in each tile instead of the picture. On Windows, terminals get a low-resolution thumbnail drawn from colored half-block characters, because an old ConPTY drops the kitty graphics sequences before the terminal sees them. WezTerm shows the picture itself once the `OpenConsole.exe` and `conpty.dll` beside it are version 1.22 or later: its nightly build bundles those, and its 20240203 stable release doesn't. The Claude Desktop app already previews pasted images, so the mod draws nothing there.
 
 ## Troubleshooting
 
