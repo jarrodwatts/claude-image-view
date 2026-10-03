@@ -44,6 +44,11 @@ test('a row of tiles shrinks to fit the band so it never scrolls', () => {
   ])
 })
 
+// On Windows the engine resolves a path before a hook sees it (separators, drive letter),
+// so the mocks compare how paths end.
+const isPath = (path: string, expected: string) =>
+  path.replaceAll('\\', '/').endsWith(expected.replaceAll('\\', '/').replace(/^[A-Za-z]:/, ''))
+
 const BAND = {
   plugin: 'image-view',
   component: 'AbovePrompt',
@@ -69,7 +74,7 @@ test('a pasted image shows without another keystroke and clears when the draft d
       { name: '-work', kind: 'dir', ...entry },
     ],
   }))
-  on('fs.exists', ($, e) => ({ value: e.path === dir || e.path === `${dir}/1.png` }))
+  on('fs.exists', ($, e) => ({ value: isPath(e.path, dir) || isPath(e.path, `${dir}/1.png`) }))
   on('fs.read', () => ({ value: { base64: pngHead(800, 400) } }))
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
 
@@ -89,4 +94,50 @@ test('a pasted image shows without another keystroke and clears when the draft d
   const after = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await after.find({ type: 'Image' })).toBeUndefined()
   expect(await after.find({ type: 'Text', text: 'engine band' })).toBeDefined()
+})
+
+test('on Windows the cache is found under %TEMP% and the thumbnail is drawn as half blocks', async ($, on) => {
+  const clock = mock.clock(on)
+  const root = 'C:\\Temp\\claude'
+  const dir = `${root}/C--work/sess-win/images`
+  const draft = 'see [Image #1]'
+  const env: Record<string, string> = { OS: 'Windows_NT', TEMP: 'C:\\Temp' }
+  // A 64x24 BGRA thumbnail, every pixel opaque orange (#ff8800).
+  const bgra = new Uint8Array(64 * 24 * 4)
+  for (let i = 0; i < bgra.length; i += 4) bgra.set([0x00, 0x88, 0xff, 0xff], i)
+  let binary = ''
+  for (const byte of bgra) binary += String.fromCharCode(byte)
+
+  on('session.start', () => ({ cwd: 'C:\\work' }))
+  on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
+  on('env.get', ($, e) => ({ value: env[e.name] }))
+  on('session.id', () => ({ value: 'sess-win' }))
+  const entry = { size: 0, mtimeMs: 0, isLink: false }
+  on('fs.list', ($, e) => ({
+    value:
+      isPath(e.path, root)
+        ? [{ name: 'C--work', kind: 'dir', ...entry }]
+        : isPath(e.path, dir)
+          ? [{ name: '1.jpg', kind: 'file', ...entry }]
+          : [],
+  }))
+  on('fs.exists', ($, e) => ({ value: isPath(e.path, dir) }))
+  on('process.run', ($, e) => {
+    expect(e.argv[0]).toBe('powershell.exe')
+    expect(e.init?.env).toEqual({ IMAGE_VIEW_FILE: `${dir}/1.jpg` })
+    return { value: { exitCode: 0, stdout: `800 400 ${btoa(binary)}\r\n`, stderr: '' } }
+  })
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\\work' })
+  await clock.advance(200)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Image' })).toBeUndefined()
+  const raster = await ui.find({ type: 'Raster' })
+  expect(raster?.props).toMatchObject({ columns: 24, rows: 6 })
+  // Every cell is an upper half block, orange over orange.
+  const cells = new Uint32Array(Uint8Array.from(atob(raster?.props.cells as string), c => c.charCodeAt(0)).buffer)
+  expect(cells.length).toBe(24 * 6 * 3)
+  expect([cells[0], cells[1], cells[2]]).toEqual([0x2580, 0xff8800, 0xff8800])
 })
