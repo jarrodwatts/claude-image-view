@@ -90,3 +90,45 @@ test('a pasted image shows without another keystroke and clears when the draft d
   expect(await after.find({ type: 'Image' })).toBeUndefined()
   expect(await after.find({ type: 'Text', text: 'engine band' })).toBeDefined()
 })
+
+test('a webp paste is converted to PNG once and drawn from the converted file', async ($, on) => {
+  const clock = mock.clock(on)
+  const session = '/tmp/claude-501/-work/sess-1'
+  const dir = `${session}/images`
+  const out = `${session}/image-view-1.png`
+  const draft = 'see [Image #1]'
+  const entry = { size: 0, mtimeMs: 0, isLink: false }
+  const converted = new Set<string>()
+  const runs: (readonly string[])[] = []
+  on('session.start', () => ({ cwd: '/work' }))
+  on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
+  on('env.get', () => ({ value: '/tmp/claude-501' }))
+  on('session.id', () => ({ value: 'sess-1' }))
+  on('fs.list', ($, e) => ({
+    value:
+      e.path === dir
+        ? [
+            { name: '12.webp', kind: 'file', ...entry },
+            { name: '1.webp', kind: 'file', ...entry },
+          ]
+        : [{ name: '-work', kind: 'dir', ...entry }],
+  }))
+  on('fs.exists', ($, e) => ({ value: e.path === dir || converted.has(e.path) }))
+  on('process.run', ($, e) => {
+    runs.push(e.argv)
+    converted.add(e.argv.at(-1) ?? '')
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('fs.read', () => ({ value: { base64: pngHead(800, 400) } }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(200)
+  await clock.advance(200)
+
+  // Converted once (12.webp is not #1's file), then reused on the next poll.
+  expect(runs).toEqual([['sips', '-s', 'format', 'png', '-Z', '800', `${dir}/1.webp`, '--out', out]])
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const image = await ui.find({ type: 'Image' })
+  expect(image?.props).toMatchObject({ source: { file: out, format: 'png' }, columns: 24, rows: 6 })
+})
