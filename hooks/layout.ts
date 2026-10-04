@@ -57,3 +57,63 @@ export function fitRow(sizes: readonly (Size | null)[], maxRows: number, bodyCol
   }
   return sizes.map(size => fitCells(size, 1))
 }
+
+type Env = Readonly<Record<string, string | undefined>>
+
+/**
+ * Whether the terminal draws `Image` as a real picture, which takes the kitty graphics protocol.
+ * `CLAUDE_IMAGE_VIEW_RENDERER` forces it: `image` for the picture, `blocks` for colored half blocks.
+ */
+export function drawsPictures(env: Env): boolean {
+  const forced = env.CLAUDE_IMAGE_VIEW_RENDERER
+  if (forced === 'image' || forced === 'blocks') return forced === 'image'
+  // tmux swallows the protocol, whatever terminal it runs in.
+  if (env.TMUX) return false
+  const term = env.TERM ?? ''
+  const program = env.TERM_PROGRAM ?? ''
+  return (
+    Boolean(env.KITTY_WINDOW_ID || env.GHOSTTY_RESOURCES_DIR || env.WEZTERM_EXECUTABLE) ||
+    /kitty|ghostty/i.test(term) ||
+    /^(ghostty|WezTerm)$/i.test(program)
+  )
+}
+
+/**
+ * The cells of a `Raster` that draws `rgb` (a `width` x `height` thumbnail) in `columns` x `rows`
+ * cells, base64. Each cell is an upper half block, so it holds two pixels: the top as its
+ * foreground and the bottom as its background.
+ */
+export function blockCells(thumb: { width: number; height: number; rgb: Uint8Array }, columns: number, rows: number): string {
+  const pixelRows = rows * 2
+  const average = (px: number, py: number): number => {
+    // The box of source pixels under output pixel (px, py), at least one pixel wide and tall.
+    const x0 = Math.floor((px * thumb.width) / columns)
+    const x1 = Math.max(x0 + 1, Math.floor(((px + 1) * thumb.width) / columns))
+    const y0 = Math.floor((py * thumb.height) / pixelRows)
+    const y1 = Math.max(y0 + 1, Math.floor(((py + 1) * thumb.height) / pixelRows))
+    let r = 0
+    let g = 0
+    let b = 0
+    let n = 0
+    for (let y = y0; y < y1 && y < thumb.height; y++) {
+      for (let x = x0; x < x1 && x < thumb.width; x++, n++) {
+        const at = (y * thumb.width + x) * 3
+        r += thumb.rgb[at]!
+        g += thumb.rgb[at + 1]!
+        b += thumb.rgb[at + 2]!
+      }
+    }
+    n = n || 1
+    return (Math.round(r / n) << 16) | (Math.round(g / n) << 8) | Math.round(b / n)
+  }
+  const words = new Uint32Array(columns * rows * 3)
+  for (let row = 0; row < rows; row++) {
+    for (let column = 0; column < columns; column++) {
+      const at = (row * columns + column) * 3
+      words[at] = 0x2580
+      words[at + 1] = average(column, row * 2)
+      words[at + 2] = average(column, row * 2 + 1)
+    }
+  }
+  return (new Uint8Array(words.buffer) as Uint8Array & { toBase64(): string }).toBase64()
+}
