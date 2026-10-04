@@ -8,8 +8,8 @@ const MIN_COLUMNS = 4
 const CELL_ASPECT = 2
 // Used when the size is unknown (file over $.fs.read's 4 MiB cap, or no file).
 const FALLBACK: Size = { width: 16, height: 10 }
-// Each tile adds a border on every side and a label row under the picture.
-const TILE_CHROME_ROWS = 3
+// Each tile adds a border on every side; the number and [×] sit in the bottom border.
+const TILE_CHROME_ROWS = 2
 const TILE_CHROME_COLUMNS = 2
 const GAP = 1
 
@@ -18,6 +18,32 @@ export function imageNumbers(draft: string): number[] {
   const seen = new Set<number>()
   for (const match of draft.matchAll(/\[Image #(\d+)\]/g)) seen.add(Number(match[1]))
   return [...seen]
+}
+
+/** The draft with every `[Image #n]` tag for `n` taken out, and the one space after each. */
+export function withoutImage(draft: string, n: number): string {
+  return draft.replace(new RegExp(`\\[Image #${n}\\] ?`, 'g'), '')
+}
+
+export const REMOVE_LABEL = '[×]'
+
+/**
+ * A tile's bottom border, `columns` + 2 cells wide, as the text before the [×] button and
+ * the text after it: `╰─ #6 ──── [×] ─╯`, tighter (`╰#6─[×]╯`, then `╰─[×]╯`) when narrow.
+ * Without the button the line is all head: `╰─ #6 ───────╯`.
+ */
+export function footer(n: number, columns: number, hasButton: boolean): { head: string; tail: string } {
+  const width = columns + 2
+  const button = hasButton ? REMOVE_LABEL.length : 0
+  // [lead, gap before the button, tail], widest first.
+  const forms = hasButton
+    ? [[`╰─ #${n} `, ' ', ' ─╯'], [`╰#${n}`, '', '╯'], ['╰', '', '╯']]
+    : [[`╰─ #${n} `, '', '╯'], [`╰#${n}`, '', '╯'], ['╰', '', '╯']]
+  for (const [lead = '', gap = '', tail = ''] of forms) {
+    const dashes = width - lead.length - gap.length - button - tail.length
+    if (dashes >= 1) return { head: lead + '─'.repeat(dashes) + gap, tail }
+  }
+  return { head: '╰', tail: '╯' }
 }
 
 /** Width and height from a PNG's IHDR chunk, or null when the bytes aren't a PNG. */

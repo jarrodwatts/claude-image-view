@@ -33,34 +33,35 @@ Then run `/reload-plugins` inside a session, or start a new one.
 
 ## What You See
 
-Paste one or more images and a row of thumbnails sits above the prompt, each labelled with the number of its tag:
+Paste one or more images and a row of thumbnails sits above the prompt, each labelled in its bottom border with the number of its tag:
 
 ```
 ╭────────────────────────╮ ╭────────────╮
 │                        │ │            │
 │      (screenshot)      │ │  (photo)   │
 │                        │ │            │
-│           #1           │ │     #2     │
-╰────────────────────────╯ ╰────────────╯
+╰─ #1 ───────────── [×] ─╯ ╰─ #2 ─ [×] ─╯
 ❯ why is the header misaligned here [Image #1] vs [Image #2]
 ```
 
 - **Thumbnails appear as soon as you paste.** You don't have to type another key first.
-- **Thumbnails keep their shape.** Wide screenshots stay wide and phone shots stay tall.
+- **Thumbnails keep their shape.** Wide screenshots stay wide and phone shots stay tall, and tiles of different heights share a bottom edge so their labels line up.
+- **Even breathing room.** The picture sits the same distance from every edge of its frame.
+- **Click `[×]` to drop an image.** It takes that `[Image #n]` tag out of the prompt. Clicks only reach Claude Code in fullscreen (`/tui fullscreen`), so the `[×]` only shows there; on the main screen the border reads `╰─ #1 ──────╯`.
 - **Always fits on screen.** Tiles shrink to fit the space above the prompt, so the row never scrolls or gets cut off.
 - **Clears on send.** Once the prompt is sent (or the tags are deleted), the row goes away.
 
 ## How It Works
 
-Claude Code saves every pasted image to a cache folder for the session, as `<tmp>/<project>/<session>/images/<n>.png`, and puts an `[Image #n]` tag in the prompt. Claude Image View is a [mod](https://code.claude.com/docs/en/plugins/mods/overview):
+Claude Code saves every pasted image to a cache folder for the session, as `<tmp>/<project>/<session>/images/<n>.<ext>` in the format it was pasted (`.png`, `.webp`, `.jpg`, ...), and puts an `[Image #n]` tag in the prompt. Claude Image View is a [mod](https://code.claude.com/docs/en/plugins/mods/overview):
 
 1. Every 200ms it reads the prompt box and looks for `[Image #n]` tags. It checks on a timer because pasting an image doesn't raise an edit event.
-2. For each tag it finds the cached PNG and reads its size from the PNG header.
-3. It draws the thumbnails in the band above the prompt with Claude Code's `Image` element. The terminal reads the file itself, so the image data never passes through the mod.
+2. For each tag it finds the cached file and makes a preview once. Kitty graphics only draws PNG from a file, so on macOS `sips` converts it (WebP, JPEG, HEIC, GIF, TIFF or PNG) to an 800px PNG. Then, if `ffmpeg` is installed, it adds a transparent strip down each side: a terminal cell is about twice as tall as it is wide, so the frame's side lines would otherwise sit half as far from the picture as the top and bottom lines. The preview is `<session>/image-preview-<n>.png`, and its size comes from the PNG header.
+3. It draws the thumbnails in the band above the prompt with Claude Code's `Image` element, inside a frame drawn from box characters so the number and `[×]` can sit in the bottom border. The terminal reads the file itself, so the image data never passes through the mod.
 
 ## Security
 
-Claude Image View is local-only. It makes no network requests and writes no files. It reads the prompt box, lists Claude Code's temp folder to find the current session's image cache, and reads the first bytes of each pasted image. If `CLAUDE_CODE_TMPDIR` isn't set, it runs `id -u` once to find the default temp folder.
+Claude Image View is local-only. It makes no network requests. It reads the prompt box, lists Claude Code's temp folder to find the current session's image cache, and reads the first bytes of each pasted image. For each paste it runs `sips` and, when installed, `ffmpeg`, writing the preview PNGs into that session's temp folder. Pressing `[×]` rewrites the prompt box's draft without that image's tag. If `CLAUDE_CODE_TMPDIR` isn't set, it runs `id -u` once to find the default temp folder.
 
 Run `claude plugin validate` on the repo to see every event it hooks and every call it makes.
 
@@ -69,6 +70,7 @@ Run `claude plugin validate` on the repo to see every event it hooks and every c
 - Claude Code v2.1.287 or later (mods support)
 - macOS or Linux
 - A terminal with the kitty graphics protocol, such as [Ghostty](https://ghostty.org) or [kitty](https://sw.kovidgoyal.net/kitty/)
+- Optional: [ffmpeg](https://ffmpeg.org) for the even padding (`brew install ffmpeg`); without it the preview is drawn without the side strips
 
 Other terminals show `[Image #n]` in each tile instead of the picture. The Claude Desktop app already previews pasted images, so the mod draws nothing there.
 
@@ -76,7 +78,7 @@ Other terminals show `[Image #n]` in each tile instead of the picture. The Claud
 
 **Nothing appears when I paste.** Run `/plugin` and check the dim line under the tabs lists `image-view` as an active mod. If it isn't listed, run `/reload-plugins`.
 
-**The tile says "no preview".** The mod couldn't find the cached file. Claude Code may have moved where it stores pasted images. Please [open an issue](https://github.com/jarrodwatts/claude-image-view/issues) with your Claude Code version.
+**The tile says "no preview".** The mod couldn't find the cached file, or the paste isn't a PNG and you're on Linux, where `sips` isn't available. Claude Code may have moved where it stores pasted images. Please [open an issue](https://github.com/jarrodwatts/claude-image-view/issues) with your Claude Code version.
 
 **The tile shows `[Image #1]` text instead of the picture.** Your terminal doesn't support the kitty graphics protocol. See [Requirements](#requirements).
 
