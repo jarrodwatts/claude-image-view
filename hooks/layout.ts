@@ -47,13 +47,23 @@ export function fitCells(size: Size | null, tileRows = TILE_ROWS): Cells {
 /**
  * Picture boxes for one row of tiles that fits the band whole, so it never scrolls:
  * the tallest tiles whose chrome fits in `maxRows` and whose total width fits in `bodyColumns`.
+ * When even one-row tiles are too wide, only the first ones that fit beside a `+N` label for
+ * the rest; none when the band is too small for one tile.
  */
 export function fitRow(sizes: readonly (Size | null)[], maxRows: number, bodyColumns: number): Cells[] {
-  const tallest = Math.max(1, Math.min(TILE_ROWS, maxRows - TILE_CHROME_ROWS))
+  if (maxRows < TILE_CHROME_ROWS + 1) return []
+  const tallest = Math.min(TILE_ROWS, maxRows - TILE_CHROME_ROWS)
   for (let tileRows = tallest; tileRows > 1; tileRows--) {
     const cells = sizes.map(size => fitCells(size, tileRows))
-    const width = cells.reduce((sum, c) => sum + c.columns + TILE_CHROME_COLUMNS, 0) + GAP * (cells.length - 1)
-    if (width <= bodyColumns) return cells
+    if (rowWidth(cells, 0) <= bodyColumns) return cells
   }
-  return sizes.map(size => fitCells(size, 1))
+  const cells = sizes.map(size => fitCells(size, 1))
+  let count = cells.length
+  while (count > 0 && rowWidth(cells.slice(0, count), cells.length - count) > bodyColumns) count--
+  return cells.slice(0, count)
+}
+
+function rowWidth(cells: readonly Cells[], hidden: number): number {
+  const tiles = cells.reduce((sum, c) => sum + c.columns + TILE_CHROME_COLUMNS, 0) + GAP * Math.max(0, cells.length - 1)
+  return hidden > 0 ? tiles + GAP + `+${hidden}`.length : tiles
 }
