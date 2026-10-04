@@ -3,3 +3,10 @@
 tsconfig.json
 .claude/
 .DS_Store
+
+# Windows helper: installed packages and run logs
+node_modules/
+*.log
+windows/tests/*.png
+windows/tests/*.bin
+windows/tests/*.txt

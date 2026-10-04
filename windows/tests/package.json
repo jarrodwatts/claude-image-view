@@ -1,0 +1,9 @@
+{
+  "name": "claude-image-view-windows-tests",
+  "private": true,
+  "description": "End-to-end runs of Claude Code under a hidden pseudo-console",
+  "dependencies": {
+    "@xterm/headless": "^5.5.0",
+    "node-pty": "^1.1.0"
+  }
+}
