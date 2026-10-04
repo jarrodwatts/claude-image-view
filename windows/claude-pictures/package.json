@@ -1,0 +1,20 @@
+{
+  "name": "claude-pictures",
+  "version": "1.0.0",
+  "description": "Real picture previews for Claude Code in Windows Terminal: rewrites kitty graphics as Sixel under the bundled pseudo-console, passes keys and mouse through, opens a clicked picture.",
+  "main": "index.cjs",
+  "scripts": {
+    "test": "node --test test/translate.test.cjs test/click.test.cjs",
+    "start": "node index.cjs"
+  },
+  "keywords": ["claude-code", "windows-terminal", "sixel", "kitty-graphics", "image-preview"],
+  "license": "MIT",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "koffi": "^3.3.2",
+    "node-pty": "^1.1.0",
+    "pngjs": "^7.0.0",
+    "sixel": "^0.16.0"
+  }
+}

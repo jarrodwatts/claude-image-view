@@ -57,3 +57,71 @@ export function fitRow(sizes: readonly (Size | null)[], maxRows: number, bodyCol
   }
   return sizes.map(size => fitCells(size, 1))
 }
+
+/** A run of identical half-block cells: `▀` in `top` over a `bottom` background; null = blank half. */
+export type Run = { top: string | null; bottom: string | null; count: number }
+
+/**
+ * Windows fallback without kitty graphics: the grid (one `rrggbb...` string per pixel row) fitted
+ * inside `columns` x `rows * 2` pixels, keeping its shape and centred, as rows of half-block runs.
+ * Each cell shows two stacked pixels.
+ */
+export function halfBlocks(grid: readonly string[], { columns, rows }: Cells): Run[][] {
+  const gh = grid.length
+  const gw = Math.floor((grid[0]?.length ?? 0) / 6)
+  if (gw === 0) return []
+  const th = rows * 2
+  const scale = Math.min(columns / gw, th / gh)
+  const w = Math.max(1, Math.round(gw * scale))
+  const h = Math.max(1, Math.round(gh * scale))
+  const left = Math.floor((columns - w) / 2)
+  const top = Math.floor((th - h) / 2)
+  const pixel = (px: number, py: number): string | null => {
+    const tx = px - left
+    const ty = py - top
+    if (tx < 0 || tx >= w || ty < 0 || ty >= h) return null
+    const x0 = Math.floor((tx * gw) / w)
+    const x1 = Math.max(x0 + 1, Math.floor(((tx + 1) * gw) / w))
+    const y0 = Math.floor((ty * gh) / h)
+    const y1 = Math.max(y0 + 1, Math.floor(((ty + 1) * gh) / h))
+    let r = 0
+    let g = 0
+    let b = 0
+    let count = 0
+    for (let y = y0; y < Math.min(y1, gh); y++) {
+      const line = grid[y] ?? ''
+      for (let x = x0; x < Math.min(x1, gw); x++) {
+        r += parseInt(line.slice(x * 6, x * 6 + 2), 16)
+        g += parseInt(line.slice(x * 6 + 2, x * 6 + 4), 16)
+        b += parseInt(line.slice(x * 6 + 4, x * 6 + 6), 16)
+        count++
+      }
+    }
+    if (count === 0) return '#000000'
+    return '#' + [r, g, b].map(v => Math.round(v / count).toString(16).padStart(2, '0')).join('')
+  }
+  const out: Run[][] = []
+  for (let r = 0; r < rows; r++) {
+    const runs: Run[] = []
+    for (let tx = 0; tx < columns; tx++) {
+      const top = pixel(tx, r * 2)
+      const bottom = pixel(tx, r * 2 + 1)
+      const last = runs[runs.length - 1]
+      if (last && last.top === top && last.bottom === bottom) last.count++
+      else runs.push({ top, bottom, count: 1 })
+    }
+    out.push(runs)
+  }
+  return out
+}
+
+/** Parses the shrinker's output: `W H` on the first line, then one `rrggbb...` row per line. */
+export function parseShrunk(stdout: string): { size: Size; grid: string[] } | null {
+  const [first, ...rest] = stdout.trim().split(/\r?\n/)
+  const [w, h] = (first ?? '').split(' ').map(Number)
+  const width = w ?? 0
+  const height = h ?? 0
+  const grid = rest.filter(line => /^([0-9a-f]{6})+$/.test(line))
+  if (!(width > 0 && height > 0) || grid.length === 0) return null
+  return { size: { width, height }, grid }
+}

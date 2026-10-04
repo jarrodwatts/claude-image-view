@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { fitCells, fitRow, imageNumbers, pngSize } from '../hooks/layout'
+import { fitCells, fitRow, halfBlocks, imageNumbers, parseShrunk, pngSize } from '../hooks/layout'
 
 function pngHead(width: number, height: number): string {
   const bytes = new Uint8Array(33)
@@ -44,6 +44,18 @@ test('a row of tiles shrinks to fit the band so it never scrolls', () => {
   ])
 })
 
+test('the Windows shrinker output parses, and half-blocks average it down', () => {
+  // 4x4 grid: top half red, bottom half blue.
+  const red = 'ff0000'.repeat(4)
+  const blue = '0000ff'.repeat(4)
+  const shrunk = parseShrunk(`800 800\r\n${red}\r\n${red}\r\n${blue}\r\n${blue}\r\n`)
+  expect(shrunk?.size).toEqual({ width: 800, height: 800 })
+  expect(shrunk?.grid.length).toBe(4)
+  // 2 columns x 1 row = 2x2 pixels: each cell is red over blue, merged into one run.
+  expect(halfBlocks(shrunk!.grid, { columns: 2, rows: 1 })).toEqual([[{ top: '#ff0000', bottom: '#0000ff', count: 2 }]])
+  expect(parseShrunk('error')).toBeNull()
+})
+
 const BAND = {
   plugin: 'image-view',
   component: 'AbovePrompt',
@@ -52,24 +64,27 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 120, scroll: { offset: 0, bodyRows: 20 }, view: {} },
 } as const
 
+const ENTRY = { size: 0, mtimeMs: 0, isLink: false }
+
 test('a pasted image shows without another keystroke and clears when the draft does', async ($, on) => {
   const clock = mock.clock(on)
   const dir = '/tmp/claude-501/-work/sess-1/images'
   let draft = 'see [Image #1] [Image #2]'
   on('session.start', () => ({ cwd: '/work' }))
   on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
-  on('env.get', () => ({ value: '/tmp/claude-501' }))
+  on('env.get', ($, e) => ({ value: e.name === 'CLAUDE_CODE_TMPDIR' ? '/tmp/claude-501' : undefined }))
   on('session.id', () => ({ value: 'sess-1' }))
   // Another project's folder and a stray file sit beside the one holding this session.
-  const entry = { size: 0, mtimeMs: 0, isLink: false }
   on('fs.list', () => ({
     value: [
-      { name: '-other', kind: 'dir', ...entry },
-      { name: 'notes.txt', kind: 'file', ...entry },
-      { name: '-work', kind: 'dir', ...entry },
+      { name: '-other', kind: 'dir', ...ENTRY },
+      { name: 'notes.txt', kind: 'file', ...ENTRY },
+      { name: '-work', kind: 'dir', ...ENTRY },
     ],
   }))
-  on('fs.exists', ($, e) => ({ value: e.path === dir || e.path === `${dir}/1.png` }))
+  // The test engine hands paths over in the host's form, so compare them in POSIX form.
+  const posix = (path: string) => path.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
+  on('fs.exists', ($, e) => ({ value: posix(e.path) === dir || posix(e.path) === `${dir}/1.png` }))
   on('fs.read', () => ({ value: { base64: pngHead(800, 400) } }))
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
 
@@ -89,4 +104,73 @@ test('a pasted image shows without another keystroke and clears when the draft d
   const after = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await after.find({ type: 'Image' })).toBeUndefined()
   expect(await after.find({ type: 'Text', text: 'engine band' })).toBeDefined()
+})
+
+test('Windows: the cache is found under %TEMP%\\claude, drawn as half-blocks, and the label opens the file', async ($, on) => {
+  const clock = mock.clock(on)
+  const dir = 'C:\\T\\claude\\C--work\\sess-1\\images'
+  const env: Record<string, string> = { OS: 'Windows_NT', TEMP: 'C:\\T' }
+  const draft = 'see [Image #1]'
+  on('session.start', () => ({ cwd: '/work' }))
+  on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
+  on('env.get', ($, e) => ({ value: env[e.name] }))
+  on('session.id', () => ({ value: 'sess-1' }))
+  on('fs.list', ($, e) => ({ value: e.path === 'C:\\T\\claude' ? [{ name: 'C--work', kind: 'dir', ...ENTRY }] : [] }))
+  on('fs.exists', ($, e) => ({ value: e.path === dir || e.path === `${dir}\\1.png` }))
+  const red = 'ff0000'.repeat(4)
+  const blue = '0000ff'.repeat(4)
+  let shrunkPath: string | undefined
+  let opened: readonly string[] | undefined
+  on('process.run', ($, e) => {
+    if (e.argv[0] === 'explorer.exe') opened = e.argv
+    else shrunkPath = e.init?.env?.IMAGE_VIEW_PATH
+    return { value: { exitCode: 0, stdout: `400 400\n${red}\n${blue}`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\\work' })
+  await clock.advance(200)
+  expect(shrunkPath).toBe(`${dir}\\1.png`)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Image' })).toBeUndefined()
+  // The shrunk picture is 4x2 (red over blue), so in the 12x6 square it sits centred: two blank
+  // rows, a half-filled red edge row, full red and blue rows, a half-filled blue edge row.
+  const leaf = (cell: { children: unknown[] }, text: string) => cell.children.length === 1 && cell.children[0] === text
+  const full = (await ui.findAll({ type: 'Text', text: '▀'.repeat(12) })).filter(cell => cell.props.backgroundColor)
+  expect(full.map(cell => `${cell.props.color}/${cell.props.backgroundColor}`)).toEqual(['#ff0000/#ff0000', '#0000ff/#0000ff'])
+  const lowerHalf = (await ui.findAll({ type: 'Text', text: '▄'.repeat(12) })).filter(cell => leaf(cell, '▄'.repeat(12)))
+  expect(lowerHalf.map(cell => cell.props)).toEqual([{ color: '#ff0000' }])
+  const blank = (await ui.findAll({ type: 'Text', text: ' '.repeat(12) })).filter(cell => leaf(cell, ' '.repeat(12)))
+  expect(blank).toHaveLength(2)
+
+  // Clicking the label opens the full picture in the default viewer.
+  expect(await ui.find({ type: 'Button', text: '#1 · open' })).toBeDefined()
+  await ui.press({ key: 'open-1' })
+  expect(opened).toEqual(['explorer.exe', `${dir}\\1.png`])
+  await ui.unmount()
+})
+
+test('Windows with the claude-pictures helper: the real picture is drawn, with the open label', async ($, on) => {
+  const clock = mock.clock(on)
+  const dir = 'C:\\T\\claude\\C--work\\sess-1\\images'
+  const env: Record<string, string> = { OS: 'Windows_NT', TEMP: 'C:\\T', CLAUDE_CODE_FORCE_TERMINAL_IMAGES: '1' }
+  const draft = 'see [Image #3]'
+  on('session.start', () => ({ cwd: '/work' }))
+  on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
+  on('env.get', ($, e) => ({ value: env[e.name] }))
+  on('session.id', () => ({ value: 'sess-1' }))
+  on('fs.list', ($, e) => ({ value: e.path === 'C:\\T\\claude' ? [{ name: 'C--work', kind: 'dir', ...ENTRY }] : [] }))
+  on('fs.exists', ($, e) => ({ value: e.path === dir || e.path === `${dir}\\3.png` }))
+  on('fs.read', () => ({ value: { base64: pngHead(400, 400) } }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\\work' })
+  await clock.advance(200)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const image = await ui.find({ type: 'Image' })
+  expect(image?.props).toMatchObject({ source: { file: `${dir}\\3.png`, format: 'png' }, columns: 12, rows: 6 })
+  expect(await ui.find({ type: 'Button', text: '#3 · open' })).toBeDefined()
+  await ui.unmount()
 })
