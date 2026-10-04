@@ -16,8 +16,12 @@ let found: { sessionId: string; dir: string } | undefined
 // The image numbers last drawn, so an unchanged draft doesn't rewrite state; undefined
 // while a drawn image's file is still missing, so the next poll looks again.
 let shownKey: string | undefined
+// The list last written, so a poll that finds the same tiles doesn't redraw the band.
+let written: string | undefined
 let isChecking = false
 const sizes = new Map<string, Size | null>()
+// Files whose first bytes aren't a PNG's: they never will be, so they aren't read again.
+const notPng = new Set<string>()
 
 // Claude Code caches each paste as <tmp>/<project>/<session>/images/<n>.png. The project
 // folder is named after a working directory that may since have moved, so find it by the
@@ -42,13 +46,18 @@ async function imagesDir($: EngineInterface): Promise<string | undefined> {
 
 async function describe($: EngineInterface, dir: string | undefined, n: number): Promise<PastedImage> {
   const path = `${dir}/${n}.png`
-  if (dir === undefined || !(await $.fs.exists(path))) return { n, path: null, size: null }
+  if (dir === undefined || notPng.has(path) || !(await $.fs.exists(path))) return { n, path: null, size: null }
   if (!sizes.has(path)) {
-    const head = await $.fs.read(path, { as: 'bytes' }).then(
-      ({ base64 }) => pngSize(base64),
+    const base64 = await $.fs.read(path, { as: 'bytes' }).then(
+      bytes => bytes.base64,
       () => undefined, // too big to read: still drawable, just without its aspect ratio
     )
-    if (head === null) return { n, path: null, size: null }
+    const head = base64 === undefined ? undefined : pngSize(base64)
+    if (head === null) {
+      // A file no longer than the 24-byte header may still be being written; a longer one is settled.
+      if (base64!.length > 32) notPng.add(path)
+      return { n, path: null, size: null }
+    }
     sizes.set(path, head ?? null)
   }
   return { n, path, size: sizes.get(path) ?? null }
@@ -62,7 +71,10 @@ async function show($: EngineInterface, draft: string) {
   const list: PastedImage[] = []
   for (const n of numbers) list.push(await describe($, dir, n))
   shownKey = list.every(image => image.path !== null) ? key : undefined
+  const json = JSON.stringify(list)
+  if (json === written) return
   await update($, images, () => list)
+  written = json
 }
 
 async function check($: EngineInterface) {
@@ -88,12 +100,14 @@ export const register: Register = on => {
 
     const { Box, Image, Text } = $.ui.resolve(e)
     const cells = fitRow(list.map(image => image.size), e.props.maxRows, e.props.bodyColumns)
+    if (cells.length === 0) return next(e)
+    const hidden = list.length - cells.length
     const below = await next(e)
 
     return (
       <Box flexDirection="column">
         <Box flexDirection="row" columnGap={1}>
-          {list.map((image, i) => {
+          {list.slice(0, cells.length).map((image, i) => {
             const { columns, rows } = cells[i] ?? { columns: 4, rows: 1 }
             return (
               <Box flexDirection="column" alignItems="center" borderStyle="round" borderDimColor>
@@ -114,6 +128,7 @@ export const register: Register = on => {
               </Box>
             )
           })}
+          {hidden > 0 && <Text dimColor>+{hidden}</Text>}
         </Box>
         {below}
       </Box>

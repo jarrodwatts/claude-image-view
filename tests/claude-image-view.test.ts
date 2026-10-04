@@ -44,6 +44,14 @@ test('a row of tiles shrinks to fit the band so it never scrolls', () => {
   ])
 })
 
+test('a row too wide even at one row keeps the tiles that fit beside a +N label', () => {
+  const square = { width: 500, height: 500 }
+  // One-row squares are 4 + 2 columns: five with gaps take 34, but " +5" makes it 37.
+  expect(fitRow(Array(10).fill(square), 20, 36)).toEqual(Array(4).fill({ columns: 4, rows: 1 }))
+  // Under one tile's height (3 rows of chrome and 1 of picture), nothing is drawn.
+  expect(fitRow([square], 3, 120)).toEqual([])
+})
+
 const BAND = {
   plugin: 'image-view',
   component: 'AbovePrompt',
@@ -89,4 +97,86 @@ test('a pasted image shows without another keystroke and clears when the draft d
   const after = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await after.find({ type: 'Image' })).toBeUndefined()
   expect(await after.find({ type: 'Text', text: 'engine band' })).toBeDefined()
+})
+
+test('a tile with no preview is neither re-read nor redrawn on every poll', async ($, on) => {
+  const clock = mock.clock(on)
+  const dir = '/tmp/claude-501/-work/sess-2/images'
+  const draft = 'see [Image #1] [Image #2]'
+  let reads = 0
+  let writes = 0
+  on('session.start', () => ({ cwd: '/work' }))
+  on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
+  on('env.get', () => ({ value: '/tmp/claude-501' }))
+  on('session.id', () => ({ value: 'sess-2' }))
+  on('fs.list', () => ({ value: [{ name: '-work', kind: 'dir', size: 0, mtimeMs: 0, isLink: false }] }))
+  // #1 is a JPEG under a .png name; #2 was never cached.
+  on('fs.exists', ($, e) => ({ value: e.path === dir || e.path === `${dir}/1.png` }))
+  on('fs.read', () => {
+    reads++
+    return { value: { base64: btoa('\xff\xd8\xff\xe0 this is a jpeg, not a png...') } }
+  })
+  on('state.set', ($, e, next) => {
+    writes++
+    return next(e)
+  })
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(200)
+  await clock.advance(200)
+  await clock.advance(200)
+
+  expect(reads).toBe(1)
+  expect(writes).toBe(1)
+})
+
+test('tiles that don\'t fit become a +N label, and a band too short for one draws nothing', async ($, on) => {
+  const clock = mock.clock(on)
+  const draft = Array.from({ length: 10 }, (_, i) => `[Image #${i + 1}]`).join(' ')
+  on('session.start', () => ({ cwd: '/work' }))
+  on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
+  on('env.get', () => ({ value: '/tmp/claude-501' }))
+  on('session.id', () => ({ value: 'sess-3' }))
+  on('fs.list', () => ({ value: [{ name: '-work', kind: 'dir', size: 0, mtimeMs: 0, isLink: false }] }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.read', () => ({ value: { base64: pngHead(500, 500) } }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(200)
+
+  const narrow = await $.ui.mount({ ...BAND, surface: 'terminal', props: { ...BAND.props, bodyColumns: 36 } })
+  expect(await narrow.find({ type: 'Text', text: '#4' })).toBeDefined()
+  expect(await narrow.find({ type: 'Text', text: '#5' })).toBeUndefined()
+  expect(await narrow.find({ type: 'Text', text: '+6' })).toBeDefined()
+  await narrow.unmount()
+
+  const short = await $.ui.mount({ ...BAND, surface: 'terminal', props: { ...BAND.props, maxRows: 3 } })
+  expect(await short.find({ type: 'Image' })).toBeUndefined()
+  expect(await short.find({ type: 'Text', text: /^\+/ })).toBeUndefined()
+  expect(await short.find({ type: 'Text', text: 'engine band' })).toBeDefined()
+})
+
+test('a file still too short to hold a PNG header is read again on the next poll', async ($, on) => {
+  const clock = mock.clock(on)
+  const dir = '/tmp/claude-501/-work/sess-4/images'
+  const draft = 'see [Image #1]'
+  let reads = 0
+  on('session.start', () => ({ cwd: '/work' }))
+  on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
+  on('env.get', () => ({ value: '/tmp/claude-501' }))
+  on('session.id', () => ({ value: 'sess-4' }))
+  on('fs.list', () => ({ value: [{ name: '-work', kind: 'dir', size: 0, mtimeMs: 0, isLink: false }] }))
+  on('fs.exists', () => ({ value: true }))
+  // The first poll catches the file mid-write, after only 10 bytes.
+  on('fs.read', () => ({ value: { base64: reads++ === 0 ? pngHead(500, 500).slice(0, 16) : pngHead(500, 500) } }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(200)
+  await clock.advance(200)
+
+  expect(reads).toBe(2)
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ source: { file: `${dir}/1.png`, format: 'png' } })
 })

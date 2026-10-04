@@ -47,7 +47,7 @@ Paste one or more images and a row of thumbnails sits above the prompt, each lab
 
 - **Thumbnails appear as soon as you paste.** You don't have to type another key first.
 - **Thumbnails keep their shape.** Wide screenshots stay wide and phone shots stay tall.
-- **Always fits on screen.** Tiles shrink to fit the space above the prompt, so the row never scrolls or gets cut off.
+- **Always fits on screen.** Tiles shrink to fit the space above the prompt, so the row never scrolls or gets cut off. If there are too many, the row ends with `+N` for the rest.
 - **Clears on send.** Once the prompt is sent (or the tags are deleted), the row goes away.
 
 ## How It Works
