@@ -1,5 +1,6 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine, MockClock } from 'claude-code/testing'
 
 import { findPlaceholders, tmuxTransmit } from '../hooks/kitty'
 import { fitCells, fitRow, imageNumbers, pngSize } from '../hooks/layout'
@@ -108,6 +109,10 @@ test('placeholder grids are read off a captured pane, in tile order', () => {
   ])
   // Placeholders with no foreground colour name no image, and a reset ends the colour.
   expect(findPlaceholders(cell(0, 0))).toEqual([])
+  // A background or underline colour is not a reset, even when its value reads 0 or 39.
+  for (const other of ['\x1b[48;5;0m', '\x1b[48;2;0;0;39m', '\x1b[58:2::39:0:0m', '\x1b[1;48;5;39m']) {
+    expect(findPlaceholders(`\x1b[38;5;7m${cell(0, 0)}${other}${cell(0, 1)}`)).toEqual([{ id: 7, columns: 2, rows: 1 }])
+  }
   for (const reset of ['\x1b[0m', '\x1b[m', '\x1b[39m']) {
     expect(findPlaceholders(`\x1b[38;5;7m${cell(0, 0)}${reset}${cell(0, 2)}`)).toEqual([{ id: 7, columns: 1, rows: 1 }])
   }
@@ -131,7 +136,8 @@ function tmuxSession(on: On, env: Record<string, string>, capture: string) {
   on('session.id', () => ({ value: 'sess-1' }))
   on('fs.list', () => ({ value: [{ name: '-work', kind: 'dir', size: 0, mtimeMs: 0, isLink: false }] }))
   on('fs.exists', ($, e) => ({ value: e.path === dir || e.path === `${dir}/1.png` }))
-  on('fs.read', () => ({ value: { base64: pngHead(800, 400) } }))
+  // The size of the image in the recorded capture, so the band draws the same 20 x 6 tile.
+  on('fs.read', () => ({ value: { base64: pngHead(1734, 1040) } }))
   on('process.run', ($, e) => {
     commands.push(e.argv.slice(0, 2).join(' '))
     if (e.argv[1] === 'display-message') return ok('/dev/ttys009\n')
@@ -140,6 +146,7 @@ function tmuxSession(on: On, env: Record<string, string>, capture: string) {
     return ok('')
   })
   on('ui.log', () => ({ value: undefined }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
   return { path: `${dir}/1.png`, writes, commands }
 }
 
@@ -149,17 +156,46 @@ const TMUX_FORCED = {
   CLAUDE_CODE_FORCE_TERMINAL_IMAGES: '1',
 }
 
+// Paste, let the poll see it, draw the band once, then let the poll run again.
+async function pasteAndDraw($: Engine, clock: MockClock) {
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(200)
+  await (await $.ui.mount({ ...BAND, surface: 'terminal' })).unmount()
+  await clock.advance(200)
+}
+
+// A 10 x 3 image higher up the pane, as an older one in the transcript would be.
+const OLDER_IMAGE = Array.from({ length: 3 }, (_, row) =>
+  `\x1b[38;5;9m${Array.from({ length: 10 }, (_, column) => String.fromCodePoint(0x10eeee, [0x0305, 0x030d, 0x030e][row]!, [0x0305, 0x030d, 0x030e, 0x0310, 0x0312, 0x033d, 0x033e, 0x033f, 0x0346, 0x034a][column]!)).join('')}\x1b[0m`,
+).join('\n')
+
 test('inside tmux the image Claude Code placed is sent again through passthrough, once', async ($, on) => {
   const clock = mock.clock(on)
   const { path, writes } = tmuxSession(on, TMUX_FORCED, ONE_TILE_CAPTURE)
 
-  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  await clock.advance(200)
+  await pasteAndDraw($, clock)
   expect(writes).toEqual([tmuxTransmit(1, path, 20, 6)])
 
   // The same tile on the next poll is not sent again.
   await clock.advance(200)
   expect(writes).toHaveLength(1)
+})
+
+test('an older image higher up the pane is not mistaken for the band', async ($, on) => {
+  const clock = mock.clock(on)
+  const { path, writes } = tmuxSession(on, TMUX_FORCED, `${OLDER_IMAGE}\n${ONE_TILE_CAPTURE}`)
+
+  await pasteAndDraw($, clock)
+  expect(writes).toEqual([tmuxTransmit(1, path, 20, 6)])
+})
+
+test('nothing is sent until the band on screen matches the tiles as drawn', async ($, on) => {
+  const clock = mock.clock(on)
+  // Only the older 10 x 3 image is on screen: the band has not been redrawn yet.
+  const { writes } = tmuxSession(on, TMUX_FORCED, OLDER_IMAGE)
+
+  await pasteAndDraw($, clock)
+  expect(writes).toEqual([])
 })
 
 const { TMUX: _tmux, ...NOT_IN_TMUX } = TMUX_FORCED

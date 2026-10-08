@@ -24,6 +24,8 @@ const sizes = new Map<string, Size | null>()
 let pane: { id: string; tty: string } | null | undefined
 // What each image id was last sent as, so an unchanged tile isn't sent again.
 const sent = new Map<number, string>()
+// The tiles with a file as the terminal band last drew them, left to right, with their cell size.
+let drawnTiles: { path: string; columns: number; rows: number }[] = []
 
 async function tmuxPane($: EngineInterface): Promise<{ id: string; tty: string } | null> {
   if (pane !== undefined) return pane
@@ -40,18 +42,22 @@ async function tmuxPane($: EngineInterface): Promise<{ id: string; tty: string }
 }
 
 // Claude Code drew placeholder cells for each tile but its pixels were dropped by tmux: read the
-// ids it chose off the pane and send each image again through passthrough. Grids and tiles both
-// run left to right, so the n-th grid is the n-th tile that has a file.
+// ids it chose off the pane and send each image again through passthrough. The band sits right
+// above the prompt, so its grids are the last ones on screen, left to right; images drawn higher
+// up (the transcript) come first and are skipped. Only a run whose sizes match the tiles as drawn
+// is trusted, so a band not yet redrawn sends nothing rather than the wrong picture.
 async function sendThroughTmux($: EngineInterface, list: readonly PastedImage[]) {
   const target = await tmuxPane($)
-  const files = list.flatMap(image => (image.path === null ? [] : [image.path]))
-  if (target === null || files.length === 0) return
+  const files = new Set(list.flatMap(image => (image.path === null ? [] : [image.path])))
+  const tiles = drawnTiles.filter(tile => files.has(tile.path))
+  if (target === null || tiles.length === 0 || tiles.length !== files.size) return
   const captured = await $.process.run(['tmux', 'capture-pane', '-p', '-e', '-t', target.id])
   if (captured.exitCode !== 0) return
-  const grids = findPlaceholders(captured.stdout)
+  const grids = findPlaceholders(captured.stdout).slice(-tiles.length)
+  if (grids.length !== tiles.length) return
+  if (grids.some((grid, i) => grid.columns !== tiles[i]!.columns || grid.rows !== tiles[i]!.rows)) return
   for (const [i, grid] of grids.entries()) {
-    const path = files[i]
-    if (path === undefined) break
+    const { path } = tiles[i]!
     const key = `${path} ${grid.columns}x${grid.rows}`
     if (sent.get(grid.id) === key) continue
     const wrote = await $.process.run(['sh', '-c', 'cat > "$1"', 'image-view', target.tty], {
@@ -127,6 +133,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     pane = undefined
     sent.clear()
+    drawnTiles = []
     $.clock.every(POLL_MS, () => check($))
     return next(e)
   })
@@ -138,6 +145,9 @@ export const register: Register = on => {
 
     const { Box, Image, Text } = $.ui.resolve(e)
     const cells = fitRow(list.map(image => image.size), e.props.maxRows, e.props.bodyColumns)
+    drawnTiles = list.flatMap((image, i) =>
+      image.path === null ? [] : [{ path: image.path, ...(cells[i] ?? { columns: 4, rows: 1 }) }],
+    )
     const below = await next(e)
 
     return (

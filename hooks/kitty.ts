@@ -18,22 +18,29 @@ const PLACEHOLDER = 0x10eeee
 /** One image's placeholder grid as drawn on the pane: its id and how many cells it spans. */
 export type PlacedGrid = { id: number; columns: number; rows: number }
 
-/** The image id an SGR parameter list sets as foreground, null when it resets it, undefined when untouched. */
+/** The foreground image id after an SGR parameter list: `current` carried on, a new id, or null on a reset. */
 function foreground(params: string, current: number | null): number | null {
   const parts = params === '' ? ['0'] : params.split(/[;:]/)
   let id = current
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i]
-    if (p === '0' || p === '39') id = null
-    else if (p === '38' && parts[i + 1] === '5') {
-      id = Number(parts[i + 2])
-      i += 2
-    } else if (p === '38' && parts[i + 1] === '2') {
-      // A colon form may carry an empty colour-space field: 38:2::R:G:B.
-      const rgb = parts.slice(i + 2, i + 6).filter(part => part !== '')
-      id = (Number(rgb[0]) << 16) | (Number(rgb[1]) << 8) | Number(rgb[2])
-      i += parts[i + 2] === '' ? 5 : 4
+    if (p === '0' || p === '39') {
+      id = null
+      continue
     }
+    // 38 sets the foreground; 48 (background) and 58 (underline) take the same arguments,
+    // which must be skipped so a value of 0 or 39 among them is not read as a reset.
+    if ((p !== '38' && p !== '48' && p !== '58') || (parts[i + 1] !== '5' && parts[i + 1] !== '2')) continue
+    if (parts[i + 1] === '5') {
+      if (p === '38') id = Number(parts[i + 2])
+      i += 2
+      continue
+    }
+    // A colon form may carry an empty colour-space field: 38:2::R:G:B.
+    const hasSpace = parts[i + 2] === ''
+    const rgb = parts.slice(i + (hasSpace ? 3 : 2), i + (hasSpace ? 6 : 5))
+    if (p === '38') id = (Number(rgb[0]) << 16) | (Number(rgb[1]) << 8) | Number(rgb[2])
+    i += hasSpace ? 5 : 4
   }
   return id
 }
