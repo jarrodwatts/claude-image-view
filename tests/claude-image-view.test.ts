@@ -1,6 +1,10 @@
+import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine, MockClock } from 'claude-code/testing'
 
+import { findPlaceholders, tmuxTransmit } from '../hooks/kitty'
 import { fitCells, fitRow, imageNumbers, pngSize } from '../hooks/layout'
+import { ONE_TILE_CAPTURE } from './fixtures'
 
 function pngHead(width: number, height: number): string {
   const bytes = new Uint8Array(33)
@@ -58,7 +62,7 @@ test('a pasted image shows without another keystroke and clears when the draft d
   let draft = 'see [Image #1] [Image #2]'
   on('session.start', () => ({ cwd: '/work' }))
   on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
-  on('env.get', () => ({ value: '/tmp/claude-501' }))
+  on('env.get', ($, e) => ({ value: e.name === 'CLAUDE_CODE_TMPDIR' ? '/tmp/claude-501' : undefined }))
   on('session.id', () => ({ value: 'sess-1' }))
   // Another project's folder and a stray file sit beside the one holding this session.
   const entry = { size: 0, mtimeMs: 0, isLink: false }
@@ -90,3 +94,119 @@ test('a pasted image shows without another keystroke and clears when the draft d
   expect(await after.find({ type: 'Image' })).toBeUndefined()
   expect(await after.find({ type: 'Text', text: 'engine band' })).toBeDefined()
 })
+
+const cell = (row: number, column: number) => String.fromCodePoint(0x10eeee, [0x0305, 0x030d][row]!, [0x0305, 0x030d, 0x030e][column]!)
+
+test('placeholder grids are read off a captured pane, in tile order', () => {
+  expect(findPlaceholders(ONE_TILE_CAPTURE)).toEqual([{ id: 1, columns: 20, rows: 6 }])
+
+  // Two tiles on one line: a 256-colour id, then a truecolour one (24-bit id) in colon form.
+  const line = (row: number) =>
+    `│\x1b[38;5;7m${cell(row, 0)}${cell(row, 1)}\x1b[39m│ │\x1b[38:2::0:1:2m${cell(row, 0)}${cell(row, 1)}${cell(row, 2)}\x1b[0m│`
+  expect(findPlaceholders(`${line(0)}\n${line(1)}`)).toEqual([
+    { id: 7, columns: 2, rows: 2 },
+    { id: 258, columns: 3, rows: 2 },
+  ])
+  // Placeholders with no foreground colour name no image, and a reset ends the colour.
+  expect(findPlaceholders(cell(0, 0))).toEqual([])
+  // A background or underline colour is not a reset, even when its value reads 0 or 39.
+  for (const other of ['\x1b[48;5;0m', '\x1b[48;2;0;0;39m', '\x1b[58:2::39:0:0m', '\x1b[1;48;5;39m']) {
+    expect(findPlaceholders(`\x1b[38;5;7m${cell(0, 0)}${other}${cell(0, 1)}`)).toEqual([{ id: 7, columns: 2, rows: 1 }])
+  }
+  for (const reset of ['\x1b[0m', '\x1b[m', '\x1b[39m']) {
+    expect(findPlaceholders(`\x1b[38;5;7m${cell(0, 0)}${reset}${cell(0, 2)}`)).toEqual([{ id: 7, columns: 1, rows: 1 }])
+  }
+})
+
+test('the transmit is wrapped in tmux passthrough with every ESC doubled', () => {
+  const wrapped = tmuxTransmit(1, '/tmp/a/1.png', 20, 6)
+  expect(wrapped.startsWith('\x1bPtmux;\x1b\x1b_G')).toBe(true)
+  expect(wrapped.endsWith('\x1b\x1b\\\x1b\\')).toBe(true)
+  expect(wrapped).toContain(`a=T,U=1,q=2,f=100,t=f,i=1,c=20,r=6;${btoa('/tmp/a/1.png')}`)
+})
+
+function tmuxSession(on: On, env: Record<string, string>, capture: string) {
+  const dir = '/tmp/claude-501/-work/sess-1/images'
+  const writes: (string | undefined)[] = []
+  const commands: string[] = []
+  const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+  on('session.start', () => ({ cwd: '/work' }))
+  on('prompt.read', () => ({ value: { text: 'see [Image #1]', cursor: 14 } }))
+  on('env.get', ($, e) => ({ value: { CLAUDE_CODE_TMPDIR: '/tmp/claude-501', ...env }[e.name] }))
+  on('session.id', () => ({ value: 'sess-1' }))
+  on('fs.list', () => ({ value: [{ name: '-work', kind: 'dir', size: 0, mtimeMs: 0, isLink: false }] }))
+  on('fs.exists', ($, e) => ({ value: e.path === dir || e.path === `${dir}/1.png` }))
+  // The size of the image in the recorded capture, so the band draws the same 20 x 6 tile.
+  on('fs.read', () => ({ value: { base64: pngHead(1734, 1040) } }))
+  on('process.run', ($, e) => {
+    commands.push(e.argv.slice(0, 2).join(' '))
+    if (e.argv[1] === 'display-message') return ok('/dev/ttys009\n')
+    if (e.argv[1] === 'capture-pane') return ok(capture)
+    writes.push(e.init?.stdin)
+    return ok('')
+  })
+  on('ui.log', () => ({ value: undefined }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
+  return { path: `${dir}/1.png`, writes, commands }
+}
+
+const TMUX_FORCED = {
+  TMUX: '/private/tmp/tmux-501/default,123,0',
+  TMUX_PANE: '%5',
+  CLAUDE_CODE_FORCE_TERMINAL_IMAGES: '1',
+}
+
+// Paste, let the poll see it, draw the band once, then let the poll run again.
+async function pasteAndDraw($: Engine, clock: MockClock) {
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(200)
+  await (await $.ui.mount({ ...BAND, surface: 'terminal' })).unmount()
+  await clock.advance(200)
+}
+
+// A 10 x 3 image higher up the pane, as an older one in the transcript would be.
+const OLDER_IMAGE = Array.from({ length: 3 }, (_, row) =>
+  `\x1b[38;5;9m${Array.from({ length: 10 }, (_, column) => String.fromCodePoint(0x10eeee, [0x0305, 0x030d, 0x030e][row]!, [0x0305, 0x030d, 0x030e, 0x0310, 0x0312, 0x033d, 0x033e, 0x033f, 0x0346, 0x034a][column]!)).join('')}\x1b[0m`,
+).join('\n')
+
+test('inside tmux the image Claude Code placed is sent again through passthrough, once', async ($, on) => {
+  const clock = mock.clock(on)
+  const { path, writes } = tmuxSession(on, TMUX_FORCED, ONE_TILE_CAPTURE)
+
+  await pasteAndDraw($, clock)
+  expect(writes).toEqual([tmuxTransmit(1, path, 20, 6)])
+
+  // The same tile on the next poll is not sent again.
+  await clock.advance(200)
+  expect(writes).toHaveLength(1)
+})
+
+test('an older image higher up the pane is not mistaken for the band', async ($, on) => {
+  const clock = mock.clock(on)
+  const { path, writes } = tmuxSession(on, TMUX_FORCED, `${OLDER_IMAGE}\n${ONE_TILE_CAPTURE}`)
+
+  await pasteAndDraw($, clock)
+  expect(writes).toEqual([tmuxTransmit(1, path, 20, 6)])
+})
+
+test('nothing is sent until the band on screen matches the tiles as drawn', async ($, on) => {
+  const clock = mock.clock(on)
+  // Only the older 10 x 3 image is on screen: the band has not been redrawn yet.
+  const { writes } = tmuxSession(on, TMUX_FORCED, OLDER_IMAGE)
+
+  await pasteAndDraw($, clock)
+  expect(writes).toEqual([])
+})
+
+const { TMUX: _tmux, ...NOT_IN_TMUX } = TMUX_FORCED
+const { CLAUDE_CODE_FORCE_TERMINAL_IMAGES: _forced, ...NOT_FORCED } = TMUX_FORCED
+
+for (const [name, env] of [['outside tmux', NOT_IN_TMUX], ['without forced terminal images', NOT_FORCED]] as const) {
+  test(`${name}, nothing is captured or sent`, async ($, on) => {
+    const clock = mock.clock(on)
+    const { commands } = tmuxSession(on, env, ONE_TILE_CAPTURE)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+    await clock.advance(200)
+    expect(commands.filter(command => command.startsWith('tmux') || command.startsWith('sh'))).toEqual([])
+  })
+}
