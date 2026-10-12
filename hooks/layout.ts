@@ -91,6 +91,14 @@ export function drawsPictures(env: Env): boolean {
 }
 
 /**
+ * Whether the terminal opens an OSC 8 hyperlink on cmd/ctrl+click. Terminal.app doesn't: Claude
+ * Code prints the URL after the text instead, and a cmd+click only reaches Quick Look.
+ */
+export function opensLinks(env: Env): boolean {
+  return env.TERM_PROGRAM !== 'Apple_Terminal'
+}
+
+/**
  * The cells of a `Raster` that draws `rgb` (a `width` x `height` thumbnail) in `columns` x `rows`
  * cells, base64. Each cell is an upper half block, so it holds two pixels: the top as its
  * foreground and the bottom as its background.

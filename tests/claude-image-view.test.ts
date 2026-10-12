@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
-import { blockCells, drawsPictures, fitCells, fitRow, imageNumbers, pngSize } from '../hooks/layout'
+import { blockCells, drawsPictures, fitCells, fitRow, imageNumbers, opensLinks, pngSize } from '../hooks/layout'
 import { decodeThumb } from '../hooks/png'
 
 function pngHead(width: number, height: number): string {
@@ -155,8 +156,8 @@ test('tiles that don\'t fit become a +N label, and a band too short for one draw
   await clock.advance(200)
 
   const narrow = await $.ui.mount({ ...BAND, surface: 'terminal', props: { ...BAND.props, bodyColumns: 36 } })
-  expect(await narrow.find({ type: 'Text', text: '#4' })).toBeDefined()
-  expect(await narrow.find({ type: 'Text', text: '#5' })).toBeUndefined()
+  expect(await narrow.find({ type: 'Link', text: '#4' })).toBeDefined()
+  expect(await narrow.find({ type: 'Link', text: '#5' })).toBeUndefined()
   expect(await narrow.find({ type: 'Text', text: '+6' })).toBeDefined()
   await narrow.unmount()
 
@@ -216,7 +217,7 @@ test('a webp paste is converted to PNG once and drawn from the converted file', 
   on('fs.exists', ($, e) => ({ value: e.path === dir || converted.has(e.path) }))
   on('process.run', ($, e) => {
     if (e.argv[0] === 'id') return ran('501\n')
-    runs.push(e.argv)
+    runs.push([...e.argv])
     converted.add(e.argv.at(-1) ?? '')
     return ran('')
   })
@@ -368,3 +369,125 @@ for (const [platform, env, root] of [
     expect(listed[0]).toBe(root)
   })
 }
+
+function pasteOf(on: Parameters<TestBody>[1], runs: string[][], env: Record<string, string> = GHOSTTY) {
+  const dir = '/tmp/claude-501/-work/sess-1/images'
+  const draft = 'see [Image #1]'
+  on('session.start', () => ({ cwd: '/work' }))
+  on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
+  on('env.get', ($, e) => ({ value: env[e.name] }))
+  on('process.run', ($, e) => {
+    runs.push([...e.argv])
+    return ran(e.argv[0] === 'uname' ? 'Darwin\n' : '501\n')
+  })
+  on('session.id', () => ({ value: 'sess-1' }))
+  const entry = { size: 0, mtimeMs: 0, isLink: false }
+  on('fs.list', ($, e) => ({
+    value: e.path === dir ? [{ name: '1.webp', kind: 'file', ...entry }] : [{ name: '-work', kind: 'dir', ...entry }],
+  }))
+  on('fs.exists', ($, e) => ({ value: e.path === dir || e.path === '/tmp/claude-501/-work/sess-1/image-view-1.png' }))
+  on('fs.read', () => ({ value: { base64: pngHead(800, 400) } }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
+  return dir
+}
+
+test('in fullscreen, pressing a tile\'s label opens the full-size paste in the system viewer', async ($, on) => {
+  const clock = mock.clock(on)
+  const runs: string[][] = []
+  const dir = pasteOf(on, runs)
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(200)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal', viewport: { ...BAND.viewport, isFullscreen: true } })
+  await ui.press({ key: 'open-1' })
+  // The original paste, not the downscaled PNG drawn in the tile.
+  expect(runs).toContainEqual(['open', `${dir}/1.webp`])
+})
+
+test('on the main screen, which reports no clicks, the label links to the full-size paste', async ($, on) => {
+  const clock = mock.clock(on)
+  const dir = pasteOf(on, [])
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(200)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Button', key: 'open-1' })).toBeUndefined()
+  const link = await ui.find({ type: 'Link', text: '#1' })
+  expect(link?.props.href).toBe(`file://${dir}/1.webp`)
+})
+
+test('only Terminal.app is known to open no hyperlinks', () => {
+  expect(opensLinks({ TERM_PROGRAM: 'Apple_Terminal' })).toBe(false)
+  expect(opensLinks({ TERM_PROGRAM: 'iTerm.app' })).toBe(true)
+  expect(opensLinks({ TERM_PROGRAM: 'vscode' })).toBe(true)
+  expect(opensLinks({})).toBe(true)
+})
+
+test('in Terminal.app the label is a Button its digit presses, not a link', async ($, on) => {
+  const clock = mock.clock(on)
+  const runs: string[][] = []
+  const dir = pasteOf(on, runs, { TERM_PROGRAM: 'Apple_Terminal' })
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(200)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Link', text: '#1' })).toBeUndefined()
+  // The URL on a line of its own, for Terminal.app's cmd+click Quick Look.
+  expect(await ui.find({ type: 'Text', text: `#1 file://${dir}/1.webp` })).toBeDefined()
+  await ui.press({ key: 'open-1' })
+  expect(runs).toContainEqual(['open', `${dir}/1.webp`])
+})
+
+const SENT = (text: string, kind: 'composer' | 'unclassified' = 'composer') =>
+  ({
+    plugin: 'image-view',
+    component: 'UserMessage',
+    requestId: 'user-message',
+    surface: 'terminal',
+    viewport: { columns: 120, rows: 40 },
+    props: { text, origin: { kind }, isExpanded: false },
+  }) as const
+
+test('a sent prompt keeps its tiles under it, linked to the full-size paste', async ($, on) => {
+  const dir = pasteOf(on, [])
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+
+  const ui = await $.ui.mount(SENT('look at [Image #1]'))
+  expect(await ui.find({ type: 'Text', text: 'engine band' })).toBeDefined()
+  expect(await ui.find({ type: 'Image', key: 'image-sent1' })).toBeDefined()
+  expect((await ui.find({ type: 'Link', text: '#1' }))?.props.href).toBe(`file://${dir}/1.webp`)
+})
+
+test('in fullscreen a sent prompt\'s label is clicked open', async ($, on) => {
+  const runs: string[][] = []
+  const dir = pasteOf(on, runs)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+
+  const sent = SENT('look at [Image #1]')
+  const ui = await $.ui.mount({ ...sent, viewport: { ...sent.viewport, isFullscreen: true } })
+  await ui.press({ key: 'open-sent1' })
+  expect(runs).toContainEqual(['open', `${dir}/1.webp`])
+})
+
+test('a sent prompt with no pastes, or not the person\'s own, is drawn as it was', async ($, on) => {
+  pasteOf(on, [])
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+
+  for (const sent of [SENT('no pictures here'), SENT('[Image #1] from a peer', 'unclassified')]) {
+    const ui = await $.ui.mount(sent)
+    expect(await ui.find({ type: 'Image' })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('in Terminal.app a sent prompt lists each paste\'s URL under its tiles', async ($, on) => {
+  const dir = pasteOf(on, [], { TERM_PROGRAM: 'Apple_Terminal' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+
+  const ui = await $.ui.mount(SENT('look at [Image #1]'))
+  expect(await ui.find({ type: 'Link' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: `#1 file://${dir}/1.webp` })).toBeDefined()
+})

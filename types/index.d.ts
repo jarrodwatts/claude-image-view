@@ -2,6 +2,8 @@ export type PastedImage = {
   n: number
   /** Absolute path of the PNG to draw (the cached paste or its converted copy); null when it can't be found. */
   path: string | null
+  /** Absolute path of the paste as cached, full size, for opening outside the terminal; null with `path`. */
+  source: string | null
   /** Pixel size; null when unknown, and the tile falls back to a default shape. */
   size: { width: number; height: number } | null
 }
