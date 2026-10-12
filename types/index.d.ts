@@ -10,6 +10,6 @@ export type PastedImage = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'image-view': { images: PastedImage[] }
+    'image-view-rs': { images: PastedImage[] }
   }
 }

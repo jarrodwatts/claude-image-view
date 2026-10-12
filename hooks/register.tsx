@@ -13,7 +13,7 @@ const POLL_MS = 200
 // The tallest a sent prompt's tiles get, so a few pastes don't push the conversation off screen.
 const SENT_ROWS = 8
 
-const images = atom({ plugin: 'image-view', key: 'images' } as const, [] as PastedImage[])
+const images = atom({ plugin: 'image-view-rs', key: 'images' } as const, [] as PastedImage[])
 
 let tmpRoot: string | undefined
 let found: { sessionId: string; dir: string } | undefined

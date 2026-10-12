@@ -1,14 +1,14 @@
 {
-  "name": "claude-image-view",
+  "name": "claude-image-view-rs",
   "owner": {
-    "name": "Jarrod Watts",
-    "url": "https://github.com/jarrodwatts"
+    "name": "Rafał Siniewicz",
+    "url": "https://github.com/rafalsiniewicz"
   },
   "plugins": [
     {
-      "name": "image-view",
+      "name": "image-view-rs",
       "source": "./",
-      "description": "See the images you paste into Claude Code: thumbnails above the prompt instead of bare [Image #1] tags",
+      "description": "See the images you paste into Claude Code: thumbnails above the prompt and under sent prompts instead of bare [Image #1] tags, each opening the full-size image",
       "category": "productivity",
       "tags": [
         "images",

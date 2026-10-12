@@ -1,13 +1,13 @@
 {
-  "name": "image-view",
-  "description": "See the images you paste into Claude Code: thumbnails above the prompt instead of bare [Image #1] tags",
-  "version": "0.2.0",
+  "name": "image-view-rs",
+  "description": "See the images you paste into Claude Code: thumbnails above the prompt and under sent prompts instead of bare [Image #1] tags, each opening the full-size image",
+  "version": "0.3.0",
   "author": {
-    "name": "Jarrod Watts",
-    "url": "https://github.com/jarrodwatts"
+    "name": "Rafał Siniewicz",
+    "url": "https://github.com/rafalsiniewicz"
   },
-  "homepage": "https://github.com/jarrodwatts/claude-image-view",
-  "repository": "https://github.com/jarrodwatts/claude-image-view",
+  "homepage": "https://github.com/rafalsiniewicz/claude-image-view",
+  "repository": "https://github.com/rafalsiniewicz/claude-image-view",
   "license": "MIT",
   "keywords": ["images", "paste", "preview", "thumbnails", "mod", "terminal", "claude-code"],
   "types": "./types/index.d.ts"

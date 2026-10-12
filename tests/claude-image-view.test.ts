@@ -60,7 +60,7 @@ test('a row too wide even at one row keeps the tiles that fit beside a +N label'
 })
 
 const BAND = {
-  plugin: 'image-view',
+  plugin: 'image-view-rs',
   component: 'AbovePrompt',
   requestId: 'above-prompt',
   viewport: { columns: 120, rows: 40 },
@@ -443,7 +443,7 @@ test('in Terminal.app the label is a Button its digit presses, not a link', asyn
 
 const SENT = (text: string, kind: 'composer' | 'unclassified' = 'composer') =>
   ({
-    plugin: 'image-view',
+    plugin: 'image-view-rs',
     component: 'UserMessage',
     requestId: 'user-message',
     surface: 'terminal',
