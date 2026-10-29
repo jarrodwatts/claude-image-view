@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { blockCells, drawsPictures, fitCells, fitRow, imageNumbers, pngSize } from '../hooks/layout'
+import { activeClientDrawsPictures, blockCells, drawsPictures, fitCells, fitRow, imageNumbers, pngSize } from '../hooks/layout'
 import { decodeThumb } from '../hooks/png'
 
 function pngHead(width: number, height: number): string {
@@ -311,6 +311,25 @@ test('real pictures only where Claude Code draws them: kitty and Ghostty, or whe
   expect(drawsPictures({ TERM: 'xterm-kitty', CLAUDE_IMAGE_VIEW_RENDERER: 'blocks' })).toBe(false)
 })
 
+test('the most recently active tmux client decides whether pictures can be drawn', () => {
+  // Kitty typed last, VS Code's terminal earlier: pictures.
+  expect(activeClientDrawsPictures('100 xterm-256color xterm.js(5.5.0)\n200 xterm-kitty kitty(0.36.0)\n')).toBe(true)
+  // VS Code typed last: blocks, however many kitty clients are attached.
+  expect(activeClientDrawsPictures('300 xterm-256color xterm.js(5.5.0)\n200 xterm-kitty kitty(0.36.0)\n')).toBe(false)
+  // Activity compares as a number, not as text ("1000" sorts before "999").
+  expect(activeClientDrawsPictures('999 xterm-256color \n1000 xterm-kitty kitty(0.36.0)')).toBe(true)
+  // Ghostty, by terminal type or by TERM name; kitty by TERM name alone.
+  expect(activeClientDrawsPictures('1 xterm-ghostty ghostty 1.2.0')).toBe(true)
+  expect(activeClientDrawsPictures('1 xterm-ghostty ')).toBe(true)
+  expect(activeClientDrawsPictures('1 xterm-kitty')).toBe(true)
+  // An unknown or missing terminal type is not capable.
+  expect(activeClientDrawsPictures('1 xterm-256color ')).toBe(false)
+  expect(activeClientDrawsPictures('1 screen-256color')).toBe(false)
+  // No clients, or output that isn't client lines: no answer, so the environment decides.
+  expect(activeClientDrawsPictures('')).toBeNull()
+  expect(activeClientDrawsPictures('no server running on /tmp/tmux-501/default\n')).toBeNull()
+})
+
 for (const [name, env, drawn, notDrawn] of [
   ['a terminal without pictures gets the thumbnail in colored blocks', { TERM_PROGRAM: 'Apple_Terminal' }, 'Raster', 'Image'],
   ['a kitty terminal still gets the real picture', { TERM: 'xterm-kitty' }, 'Image', 'Raster'],
@@ -341,6 +360,81 @@ for (const [name, env, drawn, notDrawn] of [
     await ui.unmount()
   })
 }
+
+test('in tmux the picture follows the active client and switches live', async ($, on) => {
+  const clock = mock.clock(on)
+  const dir = '/tmp/claude-501/-work/sess-tmux/images'
+  const entry = { size: 0, mtimeMs: 0, isLink: false }
+  const env: Record<string, string> = { TMUX: '/tmp/tmux-501/default,1,0', TMUX_PANE: '%3', CLAUDE_CODE_FORCE_TERMINAL_IMAGES: '1' }
+  let clients = '100 xterm-kitty kitty(0.45.0)\n50 xterm-256color \n'
+  const runs: (readonly string[])[] = []
+  on('session.start', () => ({ cwd: '/work' }))
+  on('prompt.read', () => ({ value: { text: 'see [Image #1]', cursor: 14 } }))
+  on('env.get', (_, e) => ({ value: env[e.name] }))
+  on('session.id', () => ({ value: 'sess-tmux' }))
+  on('process.run', (_, e) => {
+    runs.push(e.argv)
+    if (e.argv[1] === 'display-message') return ran('work\n')
+    return ran(e.argv[0] === 'id' ? '501\n' : clients)
+  })
+  on('fs.list', () => ({ value: [{ name: '-work', kind: 'dir', ...entry }] }))
+  on('fs.exists', (_, e) => ({ value: e.path === dir || e.path === `${dir}/1.png` }))
+  on('fs.read', () => ({ value: { base64: RGBA } }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(200)
+  const kitty = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await kitty.find({ type: 'Image' })).toBeDefined()
+  await kitty.unmount()
+  expect(runs).toContainEqual(['tmux', 'display-message', '-p', '-t', '%3', '#{session_name}'])
+  expect(runs).toContainEqual(['tmux', 'list-clients', '-t', 'work', '-F', '#{client_activity} #{client_termname} #{client_termtype}'])
+
+  // The VS Code client is used last: within a second the same paste is drawn in blocks.
+  clients = '100 xterm-kitty kitty(0.45.0)\n300 xterm-256color \n'
+  for (let i = 0; i < 5; i++) await clock.advance(200)
+  const code = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await code.find({ type: 'Image' })).toBeUndefined()
+  expect((await code.find({ type: 'Raster' }))?.props).toMatchObject({ columns: 19, rows: 6 })
+  await code.unmount()
+
+  // And back to kitty.
+  clients = '400 xterm-kitty kitty(0.45.0)\n300 xterm-256color \n'
+  for (let i = 0; i < 5; i++) await clock.advance(200)
+  const again = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await again.find({ type: 'Image' })).toBeDefined()
+})
+
+test('CLAUDE_IMAGE_VIEW_RENDERER pins the choice and tmux is never asked', async ($, on) => {
+  const clock = mock.clock(on)
+  const dir = '/tmp/claude-501/-work/sess-pin/images'
+  const entry = { size: 0, mtimeMs: 0, isLink: false }
+  const env: Record<string, string> = {
+    TMUX: '/tmp/tmux-501/default,1,0',
+    TMUX_PANE: '%3',
+    CLAUDE_CODE_FORCE_TERMINAL_IMAGES: '1',
+    CLAUDE_IMAGE_VIEW_RENDERER: 'blocks',
+  }
+  let tmuxCalls = 0
+  on('session.start', () => ({ cwd: '/work' }))
+  on('prompt.read', () => ({ value: { text: 'see [Image #1]', cursor: 14 } }))
+  on('env.get', (_, e) => ({ value: env[e.name] }))
+  on('session.id', () => ({ value: 'sess-pin' }))
+  on('process.run', (_, e) => {
+    if (e.argv[0] === 'tmux') tmuxCalls++
+    return ran('501\n')
+  })
+  on('fs.list', () => ({ value: [{ name: '-work', kind: 'dir', ...entry }] }))
+  on('fs.exists', (_, e) => ({ value: e.path === dir || e.path === `${dir}/1.png` }))
+  on('fs.read', () => ({ value: { base64: RGBA } }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  for (let i = 0; i < 6; i++) await clock.advance(200)
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Raster' })).toBeDefined()
+  expect(tmuxCalls).toBe(0)
+})
 
 for (const [platform, env, root] of [
   ['macOS and Linux', { CLAUDE_CODE_TMPDIR: '/scratch/' }, '/scratch/claude-501'],

@@ -90,6 +90,26 @@ export function drawsPictures(env: Env): boolean {
   )
 }
 
+/** Format for `tmux list-clients -F`, parsed by `activeClientDrawsPictures`. */
+export const TMUX_CLIENT_FORMAT = '#{client_activity} #{client_termname} #{client_termtype}'
+
+/**
+ * Whether the most recently active tmux client can draw pictures, from `tmux list-clients` output in
+ * `TMUX_CLIENT_FORMAT`; null when no client is listed, so the caller falls back to the environment.
+ * A client counts as capable when it is kitty or Ghostty, by its terminal type or its TERM name.
+ * An empty or unknown terminal type is not capable.
+ */
+export function activeClientDrawsPictures(listClients: string): boolean | null {
+  let newest: { activity: number; termname: string; termtype: string } | undefined
+  for (const line of listClients.split('\n')) {
+    const [activity, termname = '', termtype = ''] = line.trim().split(/\s+/)
+    if (activity === undefined || !/^\d+$/.test(activity)) continue
+    if (newest === undefined || Number(activity) > newest.activity) newest = { activity: Number(activity), termname, termtype }
+  }
+  if (newest === undefined) return null
+  return /^(kitty|ghostty)/i.test(newest.termtype) || /^xterm-(kitty|ghostty)$/i.test(newest.termname)
+}
+
 /**
  * The cells of a `Raster` that draws `rgb` (a `width` x `height` thumbnail) in `columns` x `rows`
  * cells, base64. Each cell is an upper half block, so it holds two pixels: the top as its

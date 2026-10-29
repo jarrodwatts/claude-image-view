@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { PastedImage } from '../types'
-import { blockCells, drawsPictures, fitRow, imageNumbers, pngSize } from './layout'
+import { TMUX_CLIENT_FORMAT, activeClientDrawsPictures, blockCells, drawsPictures, fitRow, imageNumbers, pngSize } from './layout'
 import type { Size } from './layout'
 import { decodeThumb } from './png'
 import type { Thumb } from './png'
@@ -10,6 +10,8 @@ import type { Thumb } from './png'
 // Pasting an image raises no prompt.edit (the tag only shows up on the next keystroke),
 // so the draft is polled instead.
 const POLL_MS = 200
+// The tmux client list is asked once per this many polls (about a second).
+const CLIENT_EVERY = 5
 
 const images = atom({ plugin: 'image-view', key: 'images' } as const, [] as PastedImage[])
 
@@ -29,6 +31,9 @@ const unconvertible = new Set<string>()
 // Small decoded copies for terminals that can't draw pictures, which get colored blocks instead.
 const thumbs = new Map<string, Thumb | null>()
 let pictures: boolean | undefined
+// Inside tmux the attached client decides, and it can change while the session runs. `watch`
+// holds the tmux session once it is known (null: not watching); `client` is the last answer.
+let tmux: { watch: string | null | undefined; client: boolean | null; tick: number } = { watch: undefined, client: null, tick: 0 }
 
 // Claude Code doesn't tell mods whether its Image draws a picture, so go by the environment
 // it decides from.
@@ -46,7 +51,44 @@ async function canDrawPictures($: EngineInterface): Promise<boolean> {
       CLAUDE_IMAGE_VIEW_RENDERER: await $.env.get('CLAUDE_IMAGE_VIEW_RENDERER'),
     })
   }
-  return pictures
+  return tmux.watch ? (tmux.client ?? pictures) : pictures
+}
+
+// Which tmux session to ask about, from the pane this process runs in; null outside tmux or when
+// CLAUDE_IMAGE_VIEW_RENDERER already settles the choice. Without CLAUDE_CODE_FORCE_TERMINAL_IMAGES
+// Claude Code draws no pictures in tmux whatever the client, so there is nothing to follow.
+async function tmuxSession($: EngineInterface): Promise<string | null> {
+  if (!(await $.env.get('TMUX')) || !(await $.env.get('CLAUDE_CODE_FORCE_TERMINAL_IMAGES'))) return null
+  if (await $.env.get('CLAUDE_IMAGE_VIEW_RENDERER')) return null
+  const pane = await $.env.get('TMUX_PANE')
+  if (!pane) return null
+  const { exitCode, stdout } = await $.process.run(['tmux', 'display-message', '-p', '-t', pane, '#{session_name}']).catch(() => ({ exitCode: 1, stdout: '' }))
+  return exitCode === 0 && stdout.trim() !== '' ? stdout.trim() : null
+}
+
+// Re-reads which kind of client was active last, and redraws the band when that changes the choice.
+async function pollClient($: EngineInterface) {
+  if (tmux.tick++ % CLIENT_EVERY !== 0) return
+  tmux.watch ??= await tmuxSession($)
+  if (!tmux.watch) return
+  const before = await canDrawPictures($)
+  const { exitCode, stdout } = await $.process
+    .run(['tmux', 'list-clients', '-t', tmux.watch, '-F', TMUX_CLIENT_FORMAT])
+    .catch(() => ({ exitCode: 1, stdout: '' }))
+  tmux.client = exitCode === 0 ? activeClientDrawsPictures(stdout) : null
+  if ((await canDrawPictures($)) !== before) $.ui.invalidate('ui.render')
+}
+
+// The small decoded copy of a picture, made on first use since only blocks need it.
+async function thumbFor($: EngineInterface, path: string): Promise<Thumb | null> {
+  if (!thumbs.has(path)) {
+    const bytes = await $.fs.read(path, { as: 'bytes' }).then(
+      read => Uint8Array.fromBase64(read.base64),
+      () => undefined,
+    )
+    thumbs.set(path, bytes === undefined ? null : decodeThumb(bytes))
+  }
+  return thumbs.get(path) ?? null
 }
 
 // Claude Code keeps its temp files in <base>/claude-<uid>, or <base>\claude on Windows. The base
@@ -117,7 +159,6 @@ async function describe($: EngineInterface, dir: string | undefined, n: number):
       return { n, path: null, size: null }
     }
     sizes.set(path, head ?? null)
-    if (base64 !== undefined && !(await canDrawPictures($))) thumbs.set(path, decodeThumb(Uint8Array.fromBase64(base64)))
   }
   return { n, path, size: sizes.get(path) ?? null }
 }
@@ -141,6 +182,7 @@ async function check($: EngineInterface) {
   isChecking = true
   try {
     await show($, (await $.prompt.read()).text)
+    await pollClient($)
   } finally {
     isChecking = false
   }
@@ -149,6 +191,7 @@ async function check($: EngineInterface) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     pictures = undefined
+    tmux = { watch: undefined, client: null, tick: 0 }
     $.clock.every(POLL_MS, () => check($))
     return next(e)
   })
@@ -162,6 +205,9 @@ export const register: Register = on => {
     const cells = fitRow(list.map(image => image.size), e.props.maxRows, e.props.bodyColumns)
     if (cells.length === 0) return next(e)
     const hidden = list.length - cells.length
+    const blocks = !(await canDrawPictures($))
+    const tileThumbs = new Map<number, Thumb | null>()
+    if (blocks) for (const image of list) if (image.path !== null) tileThumbs.set(image.n, await thumbFor($, image.path))
     const below = await next(e)
 
     return (
@@ -175,12 +221,12 @@ export const register: Register = on => {
                   <Box width={columns} height={rows} alignItems="center" justifyContent="center">
                     <Text dimColor wrap="truncate">no preview</Text>
                   </Box>
-                ) : thumbs.get(image.path) ? (
+                ) : tileThumbs.get(image.n) ? (
                   <Raster
                     key={`blocks-${image.n}`}
                     columns={columns}
                     rows={rows}
-                    cells={blockCells(thumbs.get(image.path)!, columns, rows)}
+                    cells={blockCells(tileThumbs.get(image.n)!, columns, rows)}
                   />
                 ) : (
                   <Image
