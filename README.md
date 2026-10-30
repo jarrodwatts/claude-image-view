@@ -49,6 +49,7 @@ Paste one or more images and a row of thumbnails sits above the prompt, each lab
 - **Thumbnails keep their shape.** Wide screenshots stay wide and phone shots stay tall.
 - **Always fits on screen.** Tiles shrink to fit the space above the prompt, so the row never scrolls or gets cut off. If there are too many, the row ends with `+N` for the rest.
 - **Clears on send.** Once the prompt is sent (or the tags are deleted), the row goes away.
+- **Click a number to open it.** Click the `#1` under a tile to open that paste in your image viewer (Preview on macOS), in its own window beside the terminal. Without a mouse, press `ctrl+x tab` to reach the row, Tab to the number, and press Enter.
 
 ## How It Works
 
@@ -76,7 +77,7 @@ Some terminals speak the kitty graphics protocol but still get half blocks, beca
 
 ## Security
 
-Claude Image View is local-only. It makes no network requests. It reads the prompt box, lists Claude Code's temp folder to find the current session's image cache, and reads each pasted image (up to Claude Code's 4 MiB read limit). For a non-PNG paste it runs `sips` and writes one PNG thumbnail into that session's temp folder. On macOS and Linux it runs `id -u` once to find that temp folder. It also reads a few terminal variables (`TERM`, `TERM_PROGRAM`, `TMUX` and similar) to tell which kind of thumbnail Claude Code can draw.
+Claude Image View is local-only. It makes no network requests. It reads the prompt box, lists Claude Code's temp folder to find the current session's image cache, and reads each pasted image (up to Claude Code's 4 MiB read limit). For a non-PNG paste it runs `sips` and writes one PNG thumbnail into that session's temp folder. On macOS and Linux it runs `id -u` once to find that temp folder. When you click a tile's number it runs `uname -s` once, then opens that one cached paste with `open` (macOS), `xdg-open` (Linux) or `explorer.exe` (Windows). It also reads a few terminal variables (`TERM`, `TERM_PROGRAM`, `TMUX` and similar) to tell which kind of thumbnail Claude Code can draw.
 
 Run `claude plugin validate` on the repo to see every event it hooks and every call it makes.
 
