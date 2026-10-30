@@ -368,3 +368,34 @@ for (const [platform, env, root] of [
     expect(listed[0]).toBe(root)
   })
 }
+
+test('a click on a tile\'s number opens the cached paste in the system viewer, in its own format', async ($, on) => {
+  const clock = mock.clock(on)
+  const dir = '/tmp/claude-501/-work/sess-1/images'
+  const draft = 'see [Image #2]'
+  const entry = { size: 0, mtimeMs: 0, isLink: false }
+  const runs: (readonly string[])[] = []
+  on('session.start', () => ({ cwd: '/work' }))
+  on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
+  on('env.get', ($, e) => ({ value: GHOSTTY[e.name] }))
+  on('session.id', () => ({ value: 'sess-1' }))
+  on('fs.list', ($, e) => ({
+    value: e.path === dir ? [{ name: '2.jpg', kind: 'file', ...entry }] : [{ name: '-work', kind: 'dir', ...entry }],
+  }))
+  on('fs.exists', ($, e) => ({ value: e.path === dir || e.path === '/tmp/claude-501/-work/sess-1/image-view-2.png' }))
+  on('process.run', ($, e) => {
+    if (e.argv[0] === 'id') return ran('501\n')
+    if (e.argv[0] === 'uname') return ran('Darwin\n')
+    runs.push(e.argv)
+    return ran('')
+  })
+  on('fs.read', () => ({ value: { base64: pngHead(800, 400) } }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(200)
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  // The cached paste is a jpeg: it opens as it is, not the tile's converted PNG.
+  await band.press({ key: 'open-2' })
+  expect(runs.at(-1)).toEqual(['open', `${dir}/2.jpg`])
+})

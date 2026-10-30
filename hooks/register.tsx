@@ -29,6 +29,8 @@ const unconvertible = new Set<string>()
 // Small decoded copies for terminals that can't draw pictures, which get colored blocks instead.
 const thumbs = new Map<string, Thumb | null>()
 let pictures: boolean | undefined
+// The command that hands a file to the system's own viewer, found once.
+let opener: readonly string[] | undefined
 
 // Claude Code doesn't tell mods whether its Image draws a picture, so go by the environment
 // it decides from.
@@ -102,6 +104,37 @@ async function pngFor($: EngineInterface, dir: string, n: number): Promise<strin
   return undefined
 }
 
+// macOS `open` (Preview, unless another app is the default for images), `xdg-open` on Linux,
+// Explorer on Windows.
+async function openerCommand($: EngineInterface): Promise<readonly string[]> {
+  if (opener === undefined) {
+    if ((await $.env.get('OS')) === 'Windows_NT') opener = ['explorer.exe']
+    else {
+      const { stdout } = await $.process.run(['uname', '-s']).catch(() => ({ stdout: '' }))
+      opener = stdout.trim() === 'Darwin' ? ['open'] : ['xdg-open']
+    }
+  }
+  return opener
+}
+
+// Opens paste n in the system's image viewer, its own window beside the terminal: the paste as it
+// was cached, in its own format, so nothing is converted for it.
+async function openPaste($: EngineInterface, n: number) {
+  const dir = await imagesDir($)
+  const entries = dir === undefined ? [] : await $.fs.list(dir).catch(() => [])
+  const source = entries.find(entry => entry.kind === 'file' && entry.name.startsWith(`${n}.`))
+  if (dir === undefined || source === undefined) {
+    $.ui.toast(`Image #${n} is no longer in Claude Code's cache`)
+    return
+  }
+  const command = await openerCommand($)
+  const { exitCode, stderr } = await $.process
+    .run([...command, `${dir}/${source.name}`])
+    .catch((error: unknown) => ({ exitCode: 1, stderr: String(error) }))
+  // Explorer exits 1 even when it opened the file, so only its failure to start counts there.
+  if (exitCode !== 0 && command[0] !== 'explorer.exe') $.ui.toast(`Image #${n} could not be opened: ${stderr.trim()}`)
+}
+
 async function describe($: EngineInterface, dir: string | undefined, n: number): Promise<PastedImage> {
   const path = dir === undefined ? undefined : await pngFor($, dir, n)
   if (path === undefined || notPng.has(path)) return { n, path: null, size: null }
@@ -158,7 +191,7 @@ export const register: Register = on => {
     const list = await read($, images)
     if (list.length === 0) return next(e)
 
-    const { Box, Image, Raster, Text } = $.ui.resolve(e)
+    const { Box, Button, Image, Raster, Text } = $.ui.resolve(e)
     const cells = fitRow(list.map(image => image.size), e.props.maxRows, e.props.bodyColumns)
     if (cells.length === 0) return next(e)
     const hidden = list.length - cells.length
@@ -191,7 +224,14 @@ export const register: Register = on => {
                     alt={`[Image #${image.n}]`}
                   />
                 )}
-                <Text dimColor>#{image.n}</Text>
+                {image.path === null ? (
+                  <Text dimColor>#{image.n}</Text>
+                ) : (
+                  // The number is the tile's handle: a click (or Tab to it and Enter) opens the paste.
+                  <Button key={`open-${image.n}`} plain onPress={() => openPaste($, image.n)}>
+                    <Text dimColor>#{image.n}</Text>
+                  </Button>
+                )}
               </Box>
             )
           })}
