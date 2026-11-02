@@ -68,14 +68,14 @@ Claude Code, not the mod, decides whether a terminal gets real pictures. It draw
 | Ghostty, kitty | Real picture |
 | iTerm2, Terminal.app, WezTerm, VS Code, Windows Terminal, Orca, most others | Half blocks |
 | Inside screen, even in Ghostty or kitty | Half blocks |
-| Inside tmux | Follows the most recently active attached tmux client: real picture for kitty and Ghostty, half blocks for any other (needs `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`, below). Without it, half blocks |
+| Inside tmux | Half blocks, or with `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1` (below) a real picture while a kitty or Ghostty client is the active one |
 | Agent view and background sessions | Half blocks, or real pictures with `CLAUDE_CODE_FORCE_TERMINAL_IMAGES` (below) |
 
 Some terminals speak the kitty graphics protocol but still get half blocks, because Claude Code trusts terminals by name ([anthropics/claude-code#99566](https://github.com/anthropics/claude-code/issues/99566)), or because it doesn't wrap images for tmux passthrough yet ([anthropics/claude-code#100146](https://github.com/anthropics/claude-code/issues/100146)). Those are Claude Code limits, so a fix there brings real pictures to the mod with no change here.
 
-`CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1` makes Claude Code draw pictures in any terminal. Only set it if your terminal supports the kitty protocol's Unicode placeholders. VS Code's terminal, for one, doesn't yet, and shows a grid of colored squares instead ([xtermjs/xterm.js#5711](https://github.com/xtermjs/xterm.js/issues/5711)).
+`CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1` makes Claude Code draw pictures in any terminal. Only set it if your terminal supports the kitty protocol's Unicode placeholders. VS Code's terminal, for one, doesn't yet, and shows a grid of colored squares instead ([xtermjs/xterm.js#5711](https://github.com/xtermjs/xterm.js/issues/5711)). Set it before starting Claude Code, in your shell or the `env` block of `~/.claude/settings.json`; it has no effect later.
 
-In tmux with `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`, the mod asks `tmux list-clients` about once a second which attached client was active last, and draws real pictures only when that client is kitty or Ghostty (by terminal type or `TERM`). When you switch to another client, such as VS Code's terminal, an image already on screen redraws as half blocks, and back again, without pasting it again. If tmux lists no clients, the mod falls back to the guess from the environment. `CLAUDE_IMAGE_VIEW_RENDERER` still overrides all of this.
+In tmux, with it set and `allow-passthrough on` in your tmux config, the mod follows the most recently active client: real pictures while that client is kitty or Ghostty, half blocks for any other, and it redraws when you switch. `CLAUDE_IMAGE_VIEW_RENDERER` overrides this.
 
 ## Security
 
@@ -102,8 +102,6 @@ The Claude Desktop app already previews pasted images, so the mod draws nothing 
 **The tile shows `[Image #1]` text instead of the picture.** The mod expected Claude Code to draw a picture, but it didn't. That happens in terminals that look like Ghostty or kitty but aren't, such as Herdr ([anthropics/claude-code#101306](https://github.com/anthropics/claude-code/issues/101306)), or in kitty older than 0.28. Set `CLAUDE_IMAGE_VIEW_RENDERER=blocks` in the environment you start Claude Code from. `CLAUDE_IMAGE_VIEW_RENDERER=image` forces real pictures the other way.
 
 **The tile is a grid of colored squares.** `CLAUDE_CODE_FORCE_TERMINAL_IMAGES` is set in a terminal that can't draw Unicode placeholders, such as VS Code's. Unset it to get half-block thumbnails.
-
-**In tmux the tile is a grid of colored squares, or doesn't switch when I change client.** The mod picks by the most recently active tmux client, which is the one you last typed in. Check with `tmux list-clients -F '#{client_activity} #{client_termname} #{client_termtype}'` that the client reports a kitty or Ghostty terminal type; a client that reports an empty type counts as unable to draw pictures. Without `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1` Claude Code never draws pictures in tmux, so the mod always uses half blocks. `CLAUDE_IMAGE_VIEW_RENDERER=blocks` or `image` pins the choice.
 
 **I want real pictures in agent view or a background session.** Claude Code turns terminal images off there. If you attach from Ghostty or kitty, turn them back on in the `env` block of `~/.claude/settings.json`, then start a new session:
 
