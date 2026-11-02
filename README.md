@@ -67,16 +67,19 @@ Claude Code, not the mod, decides whether a terminal gets real pictures. It draw
 |---|---|
 | Ghostty, kitty | Real picture |
 | iTerm2, Terminal.app, WezTerm, VS Code, Windows Terminal, Orca, most others | Half blocks |
-| Inside tmux or screen, even in Ghostty or kitty | Half blocks |
+| Inside screen, even in Ghostty or kitty | Half blocks |
+| Inside tmux | Half blocks, or with `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1` (below) a real picture while a kitty or Ghostty client is the active one |
 | Agent view and background sessions | Half blocks, or real pictures with `CLAUDE_CODE_FORCE_TERMINAL_IMAGES` (below) |
 
 Some terminals speak the kitty graphics protocol but still get half blocks, because Claude Code trusts terminals by name ([anthropics/claude-code#99566](https://github.com/anthropics/claude-code/issues/99566)), or because it doesn't wrap images for tmux passthrough yet ([anthropics/claude-code#100146](https://github.com/anthropics/claude-code/issues/100146)). Those are Claude Code limits, so a fix there brings real pictures to the mod with no change here.
 
-`CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1` makes Claude Code draw pictures in any terminal. Only set it if your terminal supports the kitty protocol's Unicode placeholders. VS Code's terminal, for one, doesn't yet, and shows a grid of colored squares instead ([xtermjs/xterm.js#5711](https://github.com/xtermjs/xterm.js/issues/5711)).
+`CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1` makes Claude Code draw pictures in any terminal. Only set it if your terminal supports the kitty protocol's Unicode placeholders. VS Code's terminal, for one, doesn't yet, and shows a grid of colored squares instead ([xtermjs/xterm.js#5711](https://github.com/xtermjs/xterm.js/issues/5711)). Set it before starting Claude Code, in your shell or the `env` block of `~/.claude/settings.json`; it has no effect later.
+
+In tmux, with it set and `allow-passthrough on` in your tmux config, the mod follows the most recently active client: real pictures while that client is kitty or Ghostty, half blocks for any other, and it redraws when you switch. `CLAUDE_IMAGE_VIEW_RENDERER` overrides this.
 
 ## Security
 
-Claude Image View is local-only. It makes no network requests. It reads the prompt box, lists Claude Code's temp folder to find the current session's image cache, and reads each pasted image (up to Claude Code's 4 MiB read limit). For a non-PNG paste it runs `sips` and writes one PNG thumbnail into that session's temp folder. On macOS and Linux it runs `id -u` once to find that temp folder. It also reads a few terminal variables (`TERM`, `TERM_PROGRAM`, `TMUX` and similar) to tell which kind of thumbnail Claude Code can draw.
+Claude Image View is local-only. It makes no network requests. It reads the prompt box, lists Claude Code's temp folder to find the current session's image cache, and reads each pasted image (up to Claude Code's 4 MiB read limit). For a non-PNG paste it runs `sips` and writes one PNG thumbnail into that session's temp folder. On macOS and Linux it runs `id -u` once to find that temp folder. Inside tmux it also runs `tmux display-message` once and `tmux list-clients` about once a second, read-only. It also reads a few terminal variables (`TERM`, `TERM_PROGRAM`, `TMUX` and similar) to tell which kind of thumbnail Claude Code can draw.
 
 Run `claude plugin validate` on the repo to see every event it hooks and every call it makes.
 
