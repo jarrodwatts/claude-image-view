@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { blockCells, drawsPictures, fitCells, fitRow, imageNumbers, pngSize } from '../hooks/layout'
+import { blockCells, drawsPictures, fitCells, fitRow, imageNumbers, pngSize, thumbSide } from '../hooks/layout'
 import { decodeThumb } from '../hooks/png'
 
 function pngHead(width: number, height: number): string {
@@ -28,18 +28,26 @@ test('PNG size is read from the IHDR header', () => {
 })
 
 test('thumbnails keep aspect ratio within the tile', () => {
-  // Square: 6 rows tall, twice as many columns because cells are tall.
-  expect(fitCells({ width: 500, height: 500 })).toEqual({ columns: 12, rows: 6 })
-  // Very wide: capped at 32 columns, rows shrink to match.
-  expect(fitCells({ width: 3000, height: 500 })).toEqual({ columns: 32, rows: 3 })
+  // Square: 12 rows tall, twice as many columns because cells are tall.
+  expect(fitCells({ width: 500, height: 500 })).toEqual({ columns: 24, rows: 12 })
+  // Very wide: capped at 64 columns, rows shrink to match.
+  expect(fitCells({ width: 3000, height: 500 })).toEqual({ columns: 64, rows: 5 })
   // Very tall: never narrower than 4 columns.
-  expect(fitCells({ width: 100, height: 2000 })).toEqual({ columns: 4, rows: 6 })
+  expect(fitCells({ width: 100, height: 2000 })).toEqual({ columns: 4, rows: 12 })
+})
+
+test('a picture is shrunk to twice the biggest tile, keeping its shape and never enlarged', () => {
+  expect(thumbSide({ width: 800, height: 400 })).toBeNull()
+  expect(thumbSide({ width: 1734, height: 1040 })).toBe(1361) // 816 tall
+  expect(thumbSide({ width: 1080, height: 2400 })).toBe(816) // a phone screenshot
+  expect(thumbSide({ width: 4000, height: 400 })).toBe(2048) // a wide one hits the width limit
+  expect(thumbSide(null)).toBe(816)
 })
 
 test('a row of tiles shrinks to fit the band so it never scrolls', () => {
   const square = { width: 500, height: 500 }
-  // Plenty of room: full 6-row tiles.
-  expect(fitRow([square], 20, 120)).toEqual([{ columns: 12, rows: 6 }])
+  // Plenty of room: full 12-row tiles.
+  expect(fitRow([square], 20, 120)).toEqual([{ columns: 24, rows: 12 }])
   // A short band: border and label take 3 rows, so the picture gets the rest.
   expect(fitRow([square], 7, 120)).toEqual([{ columns: 8, rows: 4 }])
   // A narrow band: three 6-row squares need 3 * 14 + 2 = 44 columns; 40 forces 5 rows.
@@ -93,7 +101,7 @@ test('a pasted image shows without another keystroke and clears when the draft d
 
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   const image = await ui.find({ type: 'Image' })
-  expect(image?.props).toMatchObject({ source: { file: `${dir}/1.png`, format: 'png' }, columns: 24, rows: 6 })
+  expect(image?.props).toMatchObject({ source: { file: `${dir}/1.png`, format: 'png' }, columns: 48, rows: 12 })
   // #2 has no cached file, so it gets a placeholder tile instead of a broken Image.
   expect(await ui.find({ type: 'Text', text: 'no preview' })).toBeDefined()
   await ui.unmount()
@@ -231,8 +239,51 @@ test('a webp paste is converted to PNG once and drawn from the converted file', 
   expect(runs).toEqual([['sips', '-s', 'format', 'png', '-Z', '800', `${dir}/1.webp`, '--out', out]])
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   const image = await ui.find({ type: 'Image' })
-  expect(image?.props).toMatchObject({ source: { file: out, format: 'png' }, columns: 24, rows: 6 })
+  expect(image?.props).toMatchObject({ source: { file: out, format: 'png' }, columns: 48, rows: 12 })
 })
+
+for (const [name, sipsExit, env, shrunk] of [
+  ['a picture far bigger than its tile is drawn from a shrunken copy, made once', 0, GHOSTTY, true],
+  ['the original is drawn where sips fails', 1, GHOSTTY, false],
+  ['half blocks need no shrunken copy', 0, { TERM_PROGRAM: 'Apple_Terminal' }, false],
+] as const) {
+  test(name, async ($, on) => {
+    const clock = mock.clock(on)
+    const session = `sess-big-${name.length}`
+    const dir = `/tmp/claude-501/-work/${session}/images`
+    const out = `/tmp/claude-501/-work/${session}/image-view-1-thumb.png`
+    const entry = { size: 0, mtimeMs: 0, isLink: false }
+    const made = new Set([dir, `${dir}/1.png`])
+    const runs: (readonly string[])[] = []
+    let draft = 'see [Image #1]'
+    on('session.start', () => ({ cwd: '/work' }))
+    on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
+    on('env.get', (_, e) => ({ value: (env as Record<string, string>)[e.name] }))
+    on('session.id', () => ({ value: session }))
+    on('fs.list', () => ({ value: [{ name: '-work', kind: 'dir', ...entry }] }))
+    on('fs.exists', (_, e) => ({ value: made.has(e.path) }))
+    on('process.run', (_, e) => {
+      if (e.argv[0] === 'id') return ran('501\n')
+      runs.push(e.argv)
+      if (sipsExit === 0) made.add(e.argv.at(-1) ?? '')
+      return { value: { ...ran('').value, exitCode: sipsExit } }
+    })
+    on('fs.read', () => ({ value: { base64: pngHead(3000, 2000) } }))
+    on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
+
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+    await clock.advance(200)
+    // A missing #2 describes #1 again on every poll, which must not run sips again.
+    draft = 'see [Image #1] [Image #2]'
+    await clock.advance(200)
+    await clock.advance(200)
+
+    expect(runs).toEqual(env === GHOSTTY ? [['sips', '-Z', '1224', `${dir}/1.png`, '--out', out]] : [])
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ source: { file: shrunk ? out : `${dir}/1.png` } })
+  })
+}
+
 // Real PNGs made with zlib, each row using a different PNG filter (none, sub, up, average, paeth).
 // RGBA 64x40, dynamic Huffman blocks: x < 32 opaque, the rest half transparent.
 const RGBA = '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'
@@ -300,6 +351,14 @@ test('real pictures only where Claude Code draws them: kitty and Ghostty, or whe
   expect(drawsPictures({ TERM_PROGRAM: 'vscode' })).toBe(false)
   // WezTerm speaks the protocol, but Claude Code only trusts kitty and Ghostty by name.
   expect(drawsPictures({ TERM_PROGRAM: 'WezTerm' })).toBe(false)
+  // Herdr keeps Ghostty's variables but answers as libghostty, so Claude Code doesn't draw there...
+  const herdr = { TERM: 'xterm-256color', TERM_PROGRAM: 'herdr', GHOSTTY_RESOURCES_DIR: '/ghostty' }
+  expect(drawsPictures(herdr)).toBe(false)
+  // ...unless forced, and those variables still count when nothing names the terminal.
+  expect(drawsPictures({ ...herdr, CLAUDE_CODE_FORCE_TERMINAL_IMAGES: '1' })).toBe(true)
+  expect(drawsPictures({ GHOSTTY_RESOURCES_DIR: '/ghostty' })).toBe(true)
+  // kitty's TERM wins over a TERM_PROGRAM inherited from the terminal that launched it.
+  expect(drawsPictures({ TERM: 'xterm-kitty', TERM_PROGRAM: 'iTerm.app' })).toBe(true)
   // Claude Code turns pictures off in tmux, screen and background sessions, even inside kitty...
   expect(drawsPictures({ TERM: 'xterm-kitty', TMUX: '/tmp/tmux-501/default,1,0' })).toBe(false)
   expect(drawsPictures({ TERM: 'xterm-kitty', STY: '1234.pts-0.host' })).toBe(false)
@@ -336,8 +395,8 @@ for (const [name, env, drawn, notDrawn] of [
 
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
     expect(await ui.find({ type: notDrawn })).toBeUndefined()
-    // 64x40 is wider than tall: 6 rows of cells, twice as many columns as 6 * 64 / 40 pixels.
-    expect((await ui.find({ type: drawn }))?.props).toMatchObject({ columns: 19, rows: 6 })
+    // 64x40 is wider than tall: 12 rows of cells, twice as many columns as 12 * 64 / 40 pixels.
+    expect((await ui.find({ type: drawn }))?.props).toMatchObject({ columns: 38, rows: 12 })
     await ui.unmount()
   })
 }

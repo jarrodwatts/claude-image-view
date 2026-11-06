@@ -1,11 +1,15 @@
 export type Size = { width: number; height: number }
 export type Cells = { columns: number; rows: number }
 
-const TILE_ROWS = 6
-const MAX_COLUMNS = 32
+const TILE_ROWS = 12
+const MAX_COLUMNS = 64
 const MIN_COLUMNS = 4
 // A terminal cell is about twice as tall as it is wide.
 const CELL_ASPECT = 2
+// A cell's device pixels on a Retina screen, where most cells are about 16x34.
+const CELL_PIXELS: Size = { width: 16, height: 34 }
+// Terminals alias a picture they shrink much past twice, which turns text to noise.
+const MAX_SHRINK = 2
 // Used when the size is unknown (file over $.fs.read's 4 MiB cap, or no file).
 const FALLBACK: Size = { width: 16, height: 10 }
 // Each tile adds a border on every side and a label row under the picture.
@@ -68,6 +72,21 @@ function rowWidth(cells: readonly Cells[], hidden: number): number {
   return hidden > 0 ? tiles + GAP + `+${hidden}`.length : tiles
 }
 
+/**
+ * The longest side, for `sips -Z`, that leaves a picture at most MAX_SHRINK times the biggest tile,
+ * or null when it is already that small. An unknown size (too big to read) gets the height limit.
+ *
+ * shortcut: sized for a full tile, so a band that squeezes tiles shrinks past MAX_SHRINK again;
+ * size the copy from the drawn tile if that shows.
+ */
+export function thumbSide(size: Size | null): number | null {
+  const maxWidth = MAX_COLUMNS * CELL_PIXELS.width * MAX_SHRINK
+  const maxHeight = TILE_ROWS * CELL_PIXELS.height * MAX_SHRINK
+  if (size === null) return maxHeight
+  const scale = Math.min(maxWidth / size.width, maxHeight / size.height)
+  return scale < 1 ? Math.round(Math.max(size.width, size.height) * scale) : null
+}
+
 type Env = Readonly<Record<string, string | undefined>>
 
 /**
@@ -76,6 +95,8 @@ type Env = Readonly<Record<string, string | undefined>>
  * CLAUDE_CODE_FORCE_TERMINAL_IMAGES is set; otherwise never inside tmux or screen or in a
  * background session, and only when the terminal is kitty or Ghostty (it goes by the terminal's
  * name, so other kitty-protocol terminals such as WezTerm still get the `alt` text).
+ * TERM_PROGRAM beats the Ghostty and kitty variables, which a program run inside them inherits:
+ * Herdr keeps GHOSTTY_RESOURCES_DIR but answers Claude Code as `libghostty`, so it draws the `alt`.
  * `CLAUDE_IMAGE_VIEW_RENDERER` overrides the guess: `image` for the picture, `blocks` for colored half blocks.
  */
 export function drawsPictures(env: Env): boolean {
@@ -83,11 +104,9 @@ export function drawsPictures(env: Env): boolean {
   if (forced === 'image' || forced === 'blocks') return forced === 'image'
   if (env.CLAUDE_CODE_FORCE_TERMINAL_IMAGES) return true
   if (env.TMUX || env.STY || env.CLAUDE_CODE_SESSION_KIND === 'bg') return false
-  return (
-    Boolean(env.KITTY_WINDOW_ID || env.GHOSTTY_RESOURCES_DIR) ||
-    /kitty|ghostty/i.test(env.TERM ?? '') ||
-    /^ghostty$/i.test(env.TERM_PROGRAM ?? '')
-  )
+  if (/kitty|ghostty/i.test(env.TERM ?? '')) return true
+  if (env.TERM_PROGRAM) return /^(ghostty|kitty)$/i.test(env.TERM_PROGRAM)
+  return Boolean(env.KITTY_WINDOW_ID || env.GHOSTTY_RESOURCES_DIR)
 }
 
 /**
