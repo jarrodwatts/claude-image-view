@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { PastedImage } from '../types'
-import { blockCells, drawsPictures, fitRow, imageNumbers, pngSize } from './layout'
+import { blockCells, drawsPictures, fitRow, imageNumbers, pngSize, thumbSide } from './layout'
 import type { Size } from './layout'
 import { decodeThumb } from './png'
 import type { Thumb } from './png'
@@ -102,8 +102,24 @@ async function pngFor($: EngineInterface, dir: string, n: number): Promise<strin
   return undefined
 }
 
+// Hands the terminal a copy near the tile's size, since it aliases what it shrinks far itself.
+// Where sips can't run (it ships with macOS only) the terminal gets the original, which still draws.
+async function prescaled($: EngineInterface, dir: string, n: number, path: string, size: Size | null): Promise<string> {
+  const side = thumbSide(size)
+  if (side === null || unconvertible.has(path) || !(await canDrawPictures($))) return path
+  const out = `${dir.replace(/\/images$/, '')}/image-view-${n}-thumb.png`
+  if (await $.fs.exists(out)) return out
+  const { exitCode } = await $.process
+    .run(['sips', '-Z', String(side), path, '--out', out])
+    .catch(() => ({ exitCode: 1 }))
+  if (exitCode === 0) return out
+  unconvertible.add(path)
+  return path
+}
+
 async function describe($: EngineInterface, dir: string | undefined, n: number): Promise<PastedImage> {
-  const path = dir === undefined ? undefined : await pngFor($, dir, n)
+  if (dir === undefined) return { n, path: null, size: null }
+  const path = await pngFor($, dir, n)
   if (path === undefined || notPng.has(path)) return { n, path: null, size: null }
   if (!sizes.has(path)) {
     const base64 = await $.fs.read(path, { as: 'bytes' }).then(
@@ -119,7 +135,8 @@ async function describe($: EngineInterface, dir: string | undefined, n: number):
     sizes.set(path, head ?? null)
     if (base64 !== undefined && !(await canDrawPictures($))) thumbs.set(path, decodeThumb(Uint8Array.fromBase64(base64)))
   }
-  return { n, path, size: sizes.get(path) ?? null }
+  const size = sizes.get(path) ?? null
+  return { n, path: await prescaled($, dir, n, path, size), size }
 }
 
 async function show($: EngineInterface, draft: string) {
